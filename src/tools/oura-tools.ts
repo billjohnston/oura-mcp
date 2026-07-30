@@ -64,7 +64,7 @@ function registerCollectionTool(server: McpServer, name: string, title: string, 
     async (params) => {
       try {
         const config = getConfig();
-        const privacyMode = resolvePrivacyMode(config, params.privacy_mode);
+        const privacyMode = resolvePrivacyMode(config, params.privacy_mode, { explicit_user_intent: (params as { explicit_user_intent?: boolean }).explicit_user_intent });
         const result = await new OuraClient(config).list(endpoint, params);
         const records = applyPrivacy(endpoint, { records: result.records }, privacyMode) as { records: unknown[] };
         const output = {
@@ -442,11 +442,11 @@ export function registerOuraTools(server: McpServer): void {
     inputSchema: SimpleReadInputSchema.shape,
     outputSchema: EndpointDataOutputSchema.shape,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
-  }, async ({ response_format, privacy_mode }) => {
+  }, async ({ response_format, privacy_mode, explicit_user_intent }) => {
     try {
       const config = getConfig();
       const endpoint = "/usercollection/personal_info";
-      const privacyMode = resolvePrivacyMode(config, privacy_mode);
+      const privacyMode = resolvePrivacyMode(config, privacy_mode, { explicit_user_intent });
       const data = applyPrivacy(endpoint, await new OuraClient(config).get(endpoint), privacyMode);
       return makeResponse({ endpoint, privacy_mode: privacyMode, data }, response_format, bulletList("Oura Personal Info", data as Record<string, unknown>));
     } catch (error) {
