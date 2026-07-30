@@ -105,7 +105,9 @@ function waitForOAuthCode(
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(successHtml());
         clearTimeout(timeout);
         server.close();
-        resolve({ code });
+        // Pass the full callback URL so exchangeCode can persist the granted `scope`
+        // query param. Oura's token endpoint does not always return scope in the body.
+        resolve({ code: requestUrl.toString() });
       } catch (error) {
         clearTimeout(timeout);
         res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end((error as Error).message);

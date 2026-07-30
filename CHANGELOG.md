@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.8 - 2026-07-30
+
+### Fixed
+
+- **Doctor no longer fails after a full Oura consent** (#8). Recommended scopes dropped the non-existent `sleep` OAuth scope (sleep/readiness/activity are covered by `daily` on Oura's consent screen and OpenAPI). `spo2Daily` (OpenAPI wire name) now satisfies the `spo2` recommendation.
+- **Auth callback persists granted scopes.** `auth` now hands the full redirect URL to `exchangeCode` so the `scope` query param is saved; Oura's token endpoint often omits `scope` in the body.
+- **Token refresh no longer wipes `scope`.** When a refresh response omits `scope`, the previously stored grant is preserved.
+
 ## 0.4.7 - 2026-07-16
 
 ### Fixed

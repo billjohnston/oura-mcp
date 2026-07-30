@@ -62,7 +62,7 @@ npx -y oura-mcp-unofficial doctor   # verifies you're ready
 Recommended scopes:
 
 ```text
-daily heartrate personal sleep workout spo2
+daily heartrate personal workout spo2
 ```
 
 Then add this to your MCP client config:
@@ -230,7 +230,7 @@ OURA_CLIENT_SECRET=…
 OURA_REDIRECT_URI=http://127.0.0.1:3000/callback
 
 # Optional
-OURA_SCOPES="daily heartrate personal sleep workout spo2"
+OURA_SCOPES="daily heartrate personal workout spo2"
 OURA_PRIVACY_MODE=structured        # summary | structured | raw
 OURA_CACHE=sqlite                   # optional read-through cache
 OURA_TOKEN_PATH=~/.oura-mcp/tokens.json

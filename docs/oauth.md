@@ -11,7 +11,7 @@ http://127.0.0.1:3000/callback
 Recommended scopes:
 
 ```text
-daily heartrate personal sleep workout spo2
+daily heartrate personal workout spo2
 ```
 
 Run:

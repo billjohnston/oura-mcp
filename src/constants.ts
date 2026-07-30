@@ -1,5 +1,5 @@
 export const SERVER_NAME = "oura-mcp-server";
-export const SERVER_VERSION = "0.4.7";
+export const SERVER_VERSION = "0.4.8";
 export const NPM_PACKAGE_NAME = "oura-mcp-unofficial";
 export const PINNED_NPM_PACKAGE = `${NPM_PACKAGE_NAME}@${SERVER_VERSION}`;
 
@@ -10,14 +10,22 @@ export const OURA_REVOKE_URL = "https://api.ouraring.com/oauth/revoke";
 export const OURA_DEVELOPER_PORTAL_URL = "https://cloud.ouraring.com/oauth/applications";
 export const OURA_DOCS_URL = "https://cloud.ouraring.com/docs/authentication";
 
+// Official Oura OAuth scopes (cloud.ouraring.com OpenAPI + auth docs).
+// There is no separate "sleep" scope — sleep/readiness/activity daily data is under `daily`.
+// SpO2 is documented as both `spo2` (auth docs / consent UI) and `spo2Daily` (OpenAPI); doctor treats them as aliases.
 export const DEFAULT_SCOPES = [
   "daily",
   "heartrate",
   "personal",
-  "sleep",
   "workout",
   "spo2"
 ];
+
+/** Map wire-format aliases to the canonical name used by DEFAULT_SCOPES / doctor. */
+export const SCOPE_ALIASES: Record<string, string> = {
+  spo2daily: "spo2",
+  spo2_daily: "spo2"
+};
 
 export const DEFAULT_LIMIT = 30;
 export const MAX_OURA_LIMIT = 100;

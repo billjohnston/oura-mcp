@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_SCOPES, OURA_DEVELOPER_PORTAL_URL, PINNED_NPM_PACKAGE } from "../constants.js";
+import { DEFAULT_SCOPES, OURA_DEVELOPER_PORTAL_URL, PINNED_NPM_PACKAGE, SCOPE_ALIASES } from "../constants.js";
 import type { PrivacyMode, OuraTokenSet } from "../types.js";
 import { HERMES_DIRECT_TOOLS, type AgentClientName } from "./agent-manifest.js";
 import { loadConfigSources } from "./local-config.js";
@@ -273,21 +273,26 @@ function buildOAuthScopeStatus(token: ConnectionStatus["token"]): ConnectionStat
     };
   }
 
-  const granted = new Set(grantedScopes);
-  const missingRecommendedScopes = DEFAULT_SCOPES.filter((scope) => !granted.has(scope));
+  const grantedCanonical = new Set(grantedScopes.map(canonicalizeScope));
+  const missingRecommendedScopes = DEFAULT_SCOPES.filter((scope) => !grantedCanonical.has(canonicalizeScope(scope)));
   return {
     recommended_scopes: DEFAULT_SCOPES,
     granted_scopes: grantedScopes,
     missing_recommended_scopes: missingRecommendedScopes,
     scope_status: missingRecommendedScopes.length === 0 ? "ok" : "missing_recommended",
-    activity_tools_ready: granted.has("daily"),
-    profile_tools_ready: granted.has("personal")
+    activity_tools_ready: grantedCanonical.has("daily"),
+    profile_tools_ready: grantedCanonical.has("personal")
   };
 }
 
 function parseScopes(scope: string | undefined): string[] {
   if (!scope) return [];
   return Array.from(new Set(scope.split(/[,\s]+/).map((value) => value.trim()).filter(Boolean))).sort();
+}
+
+function canonicalizeScope(scope: string): string {
+  const key = scope.trim().toLowerCase();
+  return SCOPE_ALIASES[key] ?? key;
 }
 
 function buildNextSteps(input: {

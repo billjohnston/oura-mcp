@@ -174,8 +174,15 @@ export class OuraClient {
 
       const body = new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refresh_token });
       const refreshed = await this.requestTokens(body);
-      await this.tokenStore.write({ ...current, ...refreshed });
-      return { ...current, ...refreshed };
+      // Oura refresh responses often omit `scope`; never wipe a previously granted scope string.
+      const merged = {
+        ...current,
+        ...refreshed,
+        scope: refreshed.scope ?? current.scope,
+        refresh_token: refreshed.refresh_token ?? current.refresh_token
+      };
+      await this.tokenStore.write(merged);
+      return merged;
     });
   }
 

@@ -46,16 +46,18 @@ try {
   assert.equal(limited.ok, false);
   assert.deepEqual(limited.oauth.granted_scopes, ['personal']);
   assert.ok(limited.oauth.missing_recommended_scopes.includes('daily'));
-  assert.ok(limited.oauth.missing_recommended_scopes.includes('sleep'));
+  assert.ok(limited.oauth.missing_recommended_scopes.includes('workout'));
+  assert.ok(!limited.oauth.missing_recommended_scopes.includes('sleep'), 'Oura has no sleep OAuth scope; doctor must not require it.');
   assert.equal(limited.oauth.activity_tools_ready, false);
   assert.equal(limited.oauth.profile_tools_ready, true);
-  assert.ok(limited.next_steps.some((step) => /re-authorize/i.test(step) && /sleep/.test(step)));
+  assert.ok(limited.next_steps.some((step) => /re-authorize/i.test(step) && /daily/.test(step)));
 
+  // Real Oura consent grants (no separate "sleep" scope — sleep lives under daily).
   writeFileSync(tokenPath, JSON.stringify({
     access_token: 'access',
     refresh_token: 'refresh',
     expires_at: 2_000_000,
-    scope: 'daily heartrate personal sleep workout spo2'
+    scope: 'daily heartrate personal workout spo2'
   }), { mode: 0o600 });
 
   const ready = await buildConnectionStatus({
@@ -74,7 +76,51 @@ try {
   assert.deepEqual(ready.oauth.missing_recommended_scopes, []);
   assert.equal(ready.oauth.activity_tools_ready, true);
 
-  console.log(JSON.stringify({ ok: true, markdown: true, scope_diagnostics: true }, null, 2));
+  // OpenAPI wire name spo2Daily must satisfy the spo2 recommendation (#8 regression).
+  writeFileSync(tokenPath, JSON.stringify({
+    access_token: 'access',
+    refresh_token: 'refresh',
+    expires_at: 2_000_000,
+    scope: 'daily heartrate personal workout spo2Daily'
+  }), { mode: 0o600 });
+
+  const aliased = await buildConnectionStatus({
+    env: {
+      OURA_CLIENT_ID: 'client-id',
+      OURA_CLIENT_SECRET: 'client-secret',
+      OURA_REDIRECT_URI: 'http://127.0.0.1:4567/callback',
+      OURA_TOKEN_PATH: tokenPath
+    },
+    homeDir: dir,
+    nowMs: 1_000_000
+  });
+
+  assert.equal(aliased.oauth.scope_status, 'ok');
+  assert.deepEqual(aliased.oauth.missing_recommended_scopes, []);
+  assert.equal(aliased.ok, true);
+
+  // Legacy local tokens that still list the non-existent "sleep" scope should not fail.
+  writeFileSync(tokenPath, JSON.stringify({
+    access_token: 'access',
+    refresh_token: 'refresh',
+    expires_at: 2_000_000,
+    scope: 'daily heartrate personal sleep workout spo2'
+  }), { mode: 0o600 });
+
+  const legacy = await buildConnectionStatus({
+    env: {
+      OURA_CLIENT_ID: 'client-id',
+      OURA_CLIENT_SECRET: 'client-secret',
+      OURA_REDIRECT_URI: 'http://127.0.0.1:4567/callback',
+      OURA_TOKEN_PATH: tokenPath
+    },
+    homeDir: dir,
+    nowMs: 1_000_000
+  });
+  assert.equal(legacy.oauth.scope_status, 'ok');
+  assert.deepEqual(legacy.oauth.missing_recommended_scopes, []);
+
+  console.log(JSON.stringify({ ok: true, markdown: true, scope_diagnostics: true, spo2_alias: true }, null, 2));
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

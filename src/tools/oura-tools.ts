@@ -160,7 +160,7 @@ export function registerOuraTools(server: McpServer): void {
           title: hasToken ? "(done) Local token present — ready to read Oura data" : "Run the OAuth dance",
           action: hasToken
             ? "Tokens stored under ~/.oura-mcp/tokens.json. The connector will refresh automatically when needed."
-            : "Run `oura-mcp-server auth` (or call oura_get_auth_url + oura_exchange_code from the agent). Open the URL, grant access, paste the code. Recommended scopes: daily heartrate personal sleep workout spo2.",
+            : "Run `oura-mcp-server auth` (or call oura_get_auth_url + oura_exchange_code from the agent). Open the URL, grant access, paste the code. Recommended scopes: daily heartrate personal workout spo2.",
           done: hasToken,
         },
         {
@@ -457,7 +457,7 @@ export function registerOuraTools(server: McpServer): void {
   registerCollectionTool(server, "oura_list_daily_activity", "Oura Daily Activity", "/usercollection/daily_activity", "List daily Oura activity summaries. Supports start/end date filters through after/before and Oura cursor pagination.");
   registerCollectionTool(server, "oura_list_daily_sleep", "Oura Daily Sleep", "/usercollection/daily_sleep", "List daily Oura sleep score summaries. Requires daily or sleep data access granted by the user. Not medical advice.");
   registerCollectionTool(server, "oura_list_daily_readiness", "Oura Daily Readiness", "/usercollection/daily_readiness", "List Oura readiness summaries and contributors. Requires daily scope. Not medical advice.");
-  registerCollectionTool(server, "oura_list_sleep", "Oura Sleep Periods", "/usercollection/sleep", "List detailed Oura sleep period records, including sleep stages and timing where available. Requires sleep scope. Not medical advice.");
+  registerCollectionTool(server, "oura_list_sleep", "Oura Sleep Periods", "/usercollection/sleep", "List detailed Oura sleep period records, including sleep stages and timing where available. Requires the daily scope (Oura has no separate sleep OAuth scope). Not medical advice.");
   registerCollectionTool(server, "oura_list_workouts", "Oura Workouts", "/usercollection/workout", "List Oura workout summaries. Requires workout scope.");
   registerCollectionTool(server, "oura_list_heartrate", "Oura Heart Rate", "/usercollection/heartrate", "List Oura heart-rate time-series records where the user's ring and membership expose them. Requires heartrate scope. Not medical advice.");
   registerCollectionTool(server, "oura_list_daily_spo2", "Oura Daily SpO2", "/usercollection/daily_spo2", "List daily Oura SpO2 averages recorded during sleep when available. Requires spo2 scope. Not medical advice.");
