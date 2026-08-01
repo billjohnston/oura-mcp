@@ -307,6 +307,51 @@ try {
     );
   });
 
+  // ---------------------------------------------------------------------------
+  // (f) ROUND 3: the `limit` description lives in the SHARED CollectionInputSchema, so
+  // the readiness-specific recency pointer was served to all 9 oura_list_* tools. An
+  // agent reading `oura_list_sleep` was told to read `oura://latest/readiness` — a
+  // resource that cannot answer its question, and the only oura://latest/ resource that
+  // exists. Each tool must name a recency route that is true for ITS OWN domain.
+  // ---------------------------------------------------------------------------
+  const listTools = toolList.tools.filter((tool) => tool.name.startsWith('oura_list_'));
+  check('all collection tools are inspected', () => {
+    assert.equal(listTools.length, 9, `expected 9 oura_list_* tools, found ${listTools.length}`);
+  });
+
+  for (const tool of listTools) {
+    const description = tool.inputSchema?.properties?.limit?.description ?? '';
+    check(`${tool.name} names the end limit cuts`, () => {
+      assert.match(description, /oldest/i, `${tool.name}: limit must say it keeps the OLDEST end`);
+    });
+
+    if (tool.name === 'oura_list_daily_readiness') {
+      check(`${tool.name} points at its own latest resource`, () => {
+        assert.match(
+          description,
+          /oura:\/\/latest\/readiness/,
+          'readiness has a latest resource and must point at it'
+        );
+      });
+      continue;
+    }
+
+    check(`${tool.name} is not sent to the readiness resource`, () => {
+      assert.doesNotMatch(
+        description,
+        /oura:\/\/latest\/readiness/,
+        `${tool.name} has no latest resource; pointing it at readiness sends the agent to data that cannot answer its question`
+      );
+    });
+    check(`${tool.name} still gives a usable recency route`, () => {
+      assert.match(
+        description,
+        /after\/before/,
+        `${tool.name} must tell the agent how to reach the newest record without a latest resource`
+      );
+    });
+  }
+
   if (failures.length) throw new AggregateError(failures, 'Oura pagination/limit contract regressions');
   console.log(JSON.stringify({ ok: true, suite: 'pagination-limit', http_requests: requestedUrls.length }, null, 2));
 } finally {

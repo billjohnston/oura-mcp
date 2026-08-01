@@ -18,19 +18,44 @@ export const DateTimeSchema = z.string()
   .optional()
   .describe("ISO 8601 date-time with timezone, e.g. 2026-05-01T00:00:00Z");
 
-export const CollectionInputSchema = z.object({
-  after: DateTimeSchema.describe("Only return Oura records after this time. Converted to an Oura start_date."),
-  before: DateTimeSchema.describe("Only return Oura records before this time. Converted to an Oura end_date."),
-  page: z.number().int().min(1).default(1).describe("Oura page number."),
-  limit: z.number().int().min(1).max(MAX_OURA_LIMIT).default(DEFAULT_LIMIT)
-    .describe("Maximum number of records returned by this call, kept from the OLDEST end of the window. Oura v2 serves collections oldest-first, has no sort parameter and no page-size parameter, so limit=1 returns the OLDEST record in the window, never the newest. To get the most recent readiness record, read the resource oura://latest/readiness, or narrow the window with after/before. The cap is applied locally after fetching and also stops cursor pagination once it is reached; when it dropped records, truncated is true and has_more is true."),
-  all_pages: z.boolean().default(false).describe("Fetch multiple pages up to max_pages."),
-  max_pages: z.number().int().min(1).max(MAX_PAGES).default(DEFAULT_MAX_PAGES)
-    .describe("Maximum pages to fetch when all_pages is true."),
-  privacy_mode: PrivacyModeSchema,
-  explicit_user_intent: ExplicitPrivacyIntentSchema,
-  response_format: ResponseFormatSchema
-}).strict();
+/**
+ * How to reach the NEWEST record of a domain, which is never what `limit` gives you.
+ *
+ * This text is per-tool on purpose. It used to live in the shared schema, which meant all
+ * nine oura_list_* tools told the agent to read `oura://latest/readiness` — the only
+ * latest resource that exists. An agent listing sleep was sent to readiness data, which
+ * cannot answer its question.
+ */
+function recencyRoute(latestResourceUri?: string): string {
+  return latestResourceUri === undefined
+    ? "This domain has no latest-record shortcut resource (only daily readiness has one), so to reach the newest record here, narrow the window with after/before until the response comes back with truncated=false and has_more=false: records are oldest-first, so the LAST one is then the newest that exists in that window."
+    : `To get the most recent record of this domain, read the resource ${latestResourceUri}, which walks the Oura cursor to the end of the window instead of stopping at its oldest block. Narrowing the window with after/before also works.`;
+}
+
+/**
+ * Collection input for one oura_list_* tool.
+ *
+ * `latestResourceUri` names the oura://latest/... resource that answers "most recent" for
+ * THIS endpoint, when one exists. Everything else is identical across the nine tools.
+ */
+export function collectionInputSchema(latestResourceUri?: string) {
+  return z.object({
+    after: DateTimeSchema.describe("Only return Oura records after this time. Converted to an Oura start_date."),
+    before: DateTimeSchema.describe("Only return Oura records before this time. Converted to an Oura end_date."),
+    page: z.number().int().min(1).default(1).describe("Oura page number."),
+    limit: z.number().int().min(1).max(MAX_OURA_LIMIT).default(DEFAULT_LIMIT)
+      .describe(`Maximum number of records returned by this call, kept from the OLDEST end of the window. Oura v2 serves collections oldest-first, has no sort parameter and no page-size parameter, so limit=1 returns the OLDEST record in the window, never the newest. ${recencyRoute(latestResourceUri)} The cap is applied locally after fetching and also stops cursor pagination once it is reached; when it dropped records, truncated is true and has_more is true.`),
+    all_pages: z.boolean().default(false).describe("Fetch multiple pages up to max_pages."),
+    max_pages: z.number().int().min(1).max(MAX_PAGES).default(DEFAULT_MAX_PAGES)
+      .describe("Maximum pages to fetch when all_pages is true."),
+    privacy_mode: PrivacyModeSchema,
+    explicit_user_intent: ExplicitPrivacyIntentSchema,
+    response_format: ResponseFormatSchema
+  }).strict();
+}
+
+/** Default shape (no latest resource). Kept for callers that only need the type. */
+export const CollectionInputSchema = collectionInputSchema();
 
 export const IdInputSchema = z.object({
   id: z.union([z.string().min(1), z.number().int().positive()]).describe("Oura resource id."),

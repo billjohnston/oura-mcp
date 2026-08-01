@@ -1,3 +1,35 @@
+## 0.6.1 - 2026-08-01
+
+### Fixed
+
+- **Eight of the nine `oura_list_*` tools stopped sending agents to readiness data.** The
+  `limit` description lives in the shared collection schema, so the recency pointer added
+  in 0.6.0 — "read the resource `oura://latest/readiness`" — was served identically by
+  `oura_list_sleep`, `oura_list_workouts`, `oura_list_heartrate` and the rest. An agent
+  asking "how did I sleep last night", correctly warned that `limit: 1` returns the
+  *oldest* record, was then routed to a resource that only holds readiness. The pointer is
+  now per tool: readiness names its resource, and the other eight say plainly that no
+  latest-record shortcut exists for their domain and give the route that does work —
+  narrow the window with `after`/`before` until `truncated` and `has_more` are both false,
+  at which point the last record returned is the newest in that window.
+- The `limit` description already named the oldest end in 0.6.0; that stays, now stated on
+  every one of the nine tools with the correct per-domain recency route beside it.
+
+### Changed
+
+- Nothing at runtime. `limit` remains an oldest-end cap: Oura serves collections
+  oldest-first behind an opaque forward cursor with no sort parameter, so "the k most
+  recent" cannot be answered without walking the whole window to its end first — that
+  would turn a one-page list call into an N-page scan and break the `page`/`next_page`
+  contract, which pages the same oldest-first order. Recency stays a separate, explicit
+  call (`oura://latest/readiness`), and the schema now points at it only where it exists.
+- Latest-record resources for the other eight domains were considered and deliberately not
+  added here: for the daily domains it is straightforward, but `heartrate` is a
+  high-cardinality time series where a 14-day cursor walk blows past the 20-page scan
+  budget and would return `most_recent_guaranteed: false` as the normal case. Shipping
+  half a family of resources reads as a rule with an unexplained hole, so the tools say
+  clearly that only readiness has one.
+
 ## 0.6.0 - 2026-08-01
 
 ### Fixed

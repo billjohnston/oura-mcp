@@ -7,7 +7,6 @@ import {
   AuthUrlOutputSchema,
   CacheStatusOutputSchema,
   CapabilitiesOutputSchema,
-  CollectionInputSchema,
   CollectionOutputSchema,
   ConnectionStatusInputSchema,
   ConnectionStatusOutputSchema,
@@ -19,6 +18,7 @@ import {
   PrivacyAuditOutputSchema,
   ResponseFormatSchema,
   ResponseOnlyInputSchema,
+  collectionInputSchema,
   RevokeAccessOutputSchema,
   SimpleReadInputSchema,
   SummaryOutputSchema,
@@ -51,13 +51,13 @@ function client(): OuraClient {
   return new OuraClient(getConfig());
 }
 
-function registerCollectionTool(server: McpServer, name: string, title: string, endpoint: string, description: string): void {
+function registerCollectionTool(server: McpServer, name: string, title: string, endpoint: string, description: string, latestResourceUri?: string): void {
   server.registerTool(
     name,
     {
       title,
       description,
-      inputSchema: CollectionInputSchema.shape,
+      inputSchema: collectionInputSchema(latestResourceUri).shape,
       outputSchema: CollectionOutputSchema.shape,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
@@ -457,7 +457,7 @@ export function registerOuraTools(server: McpServer): void {
 
   registerCollectionTool(server, "oura_list_daily_activity", "Oura Daily Activity", "/usercollection/daily_activity", "List daily Oura activity summaries. Supports start/end date filters through after/before and Oura cursor pagination.");
   registerCollectionTool(server, "oura_list_daily_sleep", "Oura Daily Sleep", "/usercollection/daily_sleep", "List daily Oura sleep score summaries. Requires daily or sleep data access granted by the user. Not medical advice.");
-  registerCollectionTool(server, "oura_list_daily_readiness", "Oura Daily Readiness", "/usercollection/daily_readiness", "List Oura readiness summaries and contributors. Requires daily scope. Not medical advice.");
+  registerCollectionTool(server, "oura_list_daily_readiness", "Oura Daily Readiness", "/usercollection/daily_readiness", "List Oura readiness summaries and contributors. Requires daily scope. Not medical advice.", "oura://latest/readiness");
   registerCollectionTool(server, "oura_list_sleep", "Oura Sleep Periods", "/usercollection/sleep", "List detailed Oura sleep period records, including sleep stages and timing where available. Requires the daily scope (Oura has no separate sleep OAuth scope). Not medical advice.");
   registerCollectionTool(server, "oura_list_workouts", "Oura Workouts", "/usercollection/workout", "List Oura workout summaries. Requires workout scope.");
   registerCollectionTool(server, "oura_list_heartrate", "Oura Heart Rate", "/usercollection/heartrate", "List Oura heart-rate time-series records where the user's ring and membership expose them. Requires heartrate scope. Not medical advice.");
