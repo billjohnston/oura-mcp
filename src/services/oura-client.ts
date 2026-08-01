@@ -1,9 +1,10 @@
 import { URL, URLSearchParams } from "node:url";
-import { DEFAULT_LIMIT, OURA_API_BASE_URL, OURA_AUTH_URL, OURA_REVOKE_URL, OURA_TOKEN_URL, MAX_OURA_LIMIT } from "../constants.js";
+import { DEFAULT_LIMIT, LATEST_SCAN_MAX_PAGES, OURA_API_BASE_URL, OURA_AUTH_URL, OURA_REVOKE_URL, OURA_TOKEN_URL, MAX_OURA_LIMIT } from "../constants.js";
 import type { OuraConfig, OuraTokenSet } from "../types.js";
 import { disabledCacheStatus, OuraCache, type CacheStatus } from "./cache.js";
 import { fetchWithCache, getCacheStats } from "./http-cache.js";
 import { fetchWithRetry as fetchWithRetryMiddleware } from "./http-retry.js";
+import { mostRecentRecord } from "./recency.js";
 import { redactErrorMessage } from "./redaction.js";
 import { TokenStore } from "./token-store.js";
 
@@ -14,6 +15,20 @@ export interface ListParams {
   limit?: number;
   all_pages?: boolean;
   max_pages?: number;
+}
+
+export interface LatestParams {
+  after?: string;
+  before?: string;
+  max_pages?: number;
+}
+
+export interface LatestResult {
+  record?: unknown;
+  pages_fetched: number;
+  records_scanned: number;
+  /** False when the page budget ran out first: the record is the newest SEEN, not provably the newest. */
+  cursor_exhausted: boolean;
 }
 
 export class OuraClient {
@@ -88,6 +103,16 @@ export class OuraClient {
    * `next_token` cursor. Pagination therefore ends when the upstream cursor is exhausted
    * or when `max_pages` / the cap is reached — never by comparing a page's length to
    * `limit`, which is a number the API has never seen.
+   *
+   * The cap keeps records from the OLDEST end, because that is the end Oura serves first
+   * and the only end reachable without walking the whole window. Callers that want the
+   * newest record want `latest()`, not `limit: 1`.
+   *
+   * TODO(next_page): `params.page` and the returned `next_page` are decorative — Oura v2
+   * paginates by opaque `next_token` cursor, so a page NUMBER cannot be sent upstream and
+   * cannot be resumed from. Same genre of defect as the old `limit`/`has_more` lies, left
+   * standing deliberately: removing them is a breaking output-schema change. Either drop
+   * both fields in the next major, or replace them with the real cursor.
    */
   async list(path: string, params: ListParams = {}): Promise<{ records: unknown[]; next_page?: number; pages_fetched: number; has_more: boolean; truncated: boolean }> {
     const limit = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), MAX_OURA_LIMIT);
@@ -117,6 +142,41 @@ export class OuraClient {
       has_more: Boolean(nextToken) || truncated,
       truncated
     };
+  }
+
+  /**
+   * The single newest record of a collection.
+   *
+   * Oura v2 serves collections OLDEST-FIRST and has no sort parameter, so the newest
+   * record is never at the head of a response — it is at the tail of the whole window,
+   * i.e. on the LAST page. Reading one page and taking its newest record returns "the
+   * newest of the oldest block", which is correct only when the window happens to fit in
+   * a single page. This walks the cursor to exhaustion instead, keeping just the newest
+   * record seen (O(1) memory), so the answer never depends on where Oura decides to put
+   * a page boundary.
+   *
+   * Cost is bounded by the CALLER narrowing the window with `after`, not by stopping the
+   * walk early. `max_pages` is a runaway guard, and `cursor_exhausted: false` reports
+   * honestly that it fired and the answer is therefore not provably the newest.
+   */
+  async latest(path: string, params: LatestParams = {}): Promise<LatestResult> {
+    const maxPages = Math.max(1, params.max_pages ?? LATEST_SCAN_MAX_PAGES);
+    let best: unknown;
+    let nextToken: string | undefined;
+    let pages = 0;
+    let scanned = 0;
+
+    while (pages < maxPages) {
+      const payload = await this.get(path, { ...ouraDateRange(params), next_token: nextToken });
+      const pageRecords = extractRecords(payload);
+      scanned += pageRecords.length;
+      if (pageRecords.length > 0) best = mostRecentRecord(best === undefined ? pageRecords : [best, ...pageRecords]);
+      pages += 1;
+      nextToken = extractNextToken(payload);
+      if (!nextToken) break;
+    }
+
+    return { record: best, pages_fetched: pages, records_scanned: scanned, cursor_exhausted: !nextToken };
   }
 
   private extractCode(input: string): string {
@@ -288,7 +348,7 @@ export class OuraClient {
   }
 }
 
-function ouraDateRange(params: ListParams): Record<string, string> {
+function ouraDateRange(params: { after?: string; before?: string }): Record<string, string> {
   const range: Record<string, string> = {};
   if (params.after) range.start_date = toDate(params.after);
   if (params.before) range.end_date = toDate(params.before);

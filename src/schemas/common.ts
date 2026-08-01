@@ -23,7 +23,7 @@ export const CollectionInputSchema = z.object({
   before: DateTimeSchema.describe("Only return Oura records before this time. Converted to an Oura end_date."),
   page: z.number().int().min(1).default(1).describe("Oura page number."),
   limit: z.number().int().min(1).max(MAX_OURA_LIMIT).default(DEFAULT_LIMIT)
-    .describe("Maximum number of records returned by this call. The Oura v2 API has no page-size parameter, so the cap is applied locally after fetching and also stops cursor pagination once it is reached. When records were dropped by the cap, truncated is true and has_more is true."),
+    .describe("Maximum number of records returned by this call, kept from the OLDEST end of the window. Oura v2 serves collections oldest-first, has no sort parameter and no page-size parameter, so limit=1 returns the OLDEST record in the window, never the newest. To get the most recent readiness record, read the resource oura://latest/readiness, or narrow the window with after/before. The cap is applied locally after fetching and also stops cursor pagination once it is reached; when it dropped records, truncated is true and has_more is true."),
   all_pages: z.boolean().default(false).describe("Fetch multiple pages up to max_pages."),
   max_pages: z.number().int().min(1).max(MAX_PAGES).default(DEFAULT_MAX_PAGES)
     .describe("Maximum pages to fetch when all_pages is true."),

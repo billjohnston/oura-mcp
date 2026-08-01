@@ -1,5 +1,5 @@
 export const SERVER_NAME = "oura-mcp-server";
-export const SERVER_VERSION = "0.5.0";
+export const SERVER_VERSION = "0.6.0";
 export const NPM_PACKAGE_NAME = "oura-mcp-unofficial";
 export const PINNED_NPM_PACKAGE = `${NPM_PACKAGE_NAME}@${SERVER_VERSION}`;
 
@@ -31,3 +31,21 @@ export const DEFAULT_LIMIT = 30;
 export const MAX_OURA_LIMIT = 100;
 export const DEFAULT_MAX_PAGES = 1;
 export const MAX_PAGES = 10;
+
+/**
+ * Page budget for a "most recent record" scan (`OuraClient.latest`).
+ *
+ * Oura serves collections oldest-first with an opaque cursor, so the newest record is
+ * only reachable by walking a window to the end. Bigger than MAX_PAGES because the scan
+ * keeps one record in memory, not a page of them, and because stopping early is the
+ * exact defect this budget exists to prevent.
+ */
+export const LATEST_SCAN_MAX_PAGES = 20;
+
+/**
+ * Lookback ladder for "most recent record", in days, narrowest first.
+ *
+ * The narrow window is what bounds the cost of the walk; widening only happens when a
+ * window came back empty, so a ring that has not synced in weeks still answers.
+ */
+export const LATEST_LOOKBACK_DAYS = [14, 90, 400];

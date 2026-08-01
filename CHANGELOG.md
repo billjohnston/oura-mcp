@@ -1,3 +1,59 @@
+## 0.6.0 - 2026-08-01
+
+### Fixed
+
+- **`oura://latest/readiness` is now the newest record by construction, not by luck of the
+  window size.** 0.5.0 made the resource singular but still read a single page: one
+  `list()` call, no pagination. Since Oura serves collections oldest-first, the newest
+  record lives on the *last* page — so the resource was returning the newest of the
+  *oldest block*. Measured on 250 records served in pages of 40: it answered record 40 and
+  labelled it "Most recent". Today's daily-readiness window usually fits in one page, so
+  the contract was being honoured by data shape, not by code. The resource now asks for a
+  short recent window (14 days) and walks that window's cursor **to exhaustion**, keeping
+  only the newest record seen, so the answer no longer depends on where Oura puts a page
+  boundary. If the narrow window comes back empty it widens (14 → 90 → 400 days), so a
+  ring that has not synced in weeks still answers instead of reporting nothing.
+- **The `limit` schema now says which end it cuts.** `limit` keeps the *k oldest* records
+  of the window, and the description ("Maximum number of records returned by this call")
+  was true but silent about that. An agent passing `limit: 1` to see "my latest readiness"
+  got the **oldest** record — the same trap that produced the 0.5.0 resource defect, still
+  live in the one artifact an agent actually reads. The description now names the oldest
+  end explicitly and points at `oura://latest/readiness` for recency.
+
+### Changed
+
+- `oura://latest/readiness` gains `lookback_days`, `pages_scanned` and
+  `most_recent_guaranteed` alongside `records`. `most_recent_guaranteed: false` means the
+  20-page runaway guard fired mid-window, so the record is the newest *seen* rather than
+  provably the newest — the guard reports itself instead of truncating silently. This
+  additive output-contract change is what the minor bump is for.
+- **`limit` behaviour is deliberately unchanged: it stays an oldest-end cap.** Making it
+  return the *k most recent* was considered and rejected. Oura v2 has no sort parameter, so
+  "k most recent" is only obtainable by paginating the entire window — which would make
+  every list call expensive — or by taking the tail of page 1, which is exactly the defect
+  fixed above wearing a different hat. Truthful documentation plus a correct dedicated
+  resource beats a parameter whose cost or correctness depends on data shape.
+
+### Known, not fixed
+
+- **`page` (input) and `next_page` (output) are decorative.** Oura v2 paginates by opaque
+  `next_token` cursor, so a page *number* cannot be sent upstream and `next_page` cannot be
+  resumed from. Same genre as the `limit`/`has_more` lies fixed in 0.5.0, now standing next
+  to flags that are honest. Left in place because removing them is a breaking output-schema
+  change; tracked as `TODO(next_page)` in `src/services/oura-client.ts` for the next major,
+  which should either drop both fields or expose the real cursor.
+
+### Added
+
+- `test:pagination-limit` gains a **multi-page** fixture (250 synthetic records in pages of
+  40) asserting that `oura://latest/readiness` returns record 250 and not record 40, plus
+  assertions that the page-budget guard reports `most_recent_guaranteed: false` instead of
+  lying, that an empty narrow window widens to the 90-day rung, and that the `limit` schema
+  description names the oldest end and the recency resource. Five of these fail on 0.5.0.
+  Every record remains synthetic.
+- `OuraClient.latest(path, params)` — bounded oldest-first cursor scan returning the single
+  newest record with `cursor_exhausted`, `pages_fetched` and `records_scanned`.
+
 ## 0.5.0 - 2026-08-01
 
 ### Fixed

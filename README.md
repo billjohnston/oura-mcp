@@ -207,7 +207,7 @@ This package uses the official Oura Cloud API v2. When this README says `raw`, i
 
 - `oura://capabilities`, `oura://agent-manifest`
 - `oura://personal-info`
-- `oura://latest/readiness`
+- `oura://latest/readiness` — the single newest readiness record. Use this for "my latest readiness": Oura serves collections oldest-first with no sort parameter, so `oura_list_daily_readiness` with `limit: 1` returns the **oldest** record in the window, not the newest.
 - `oura://summary/daily`, `oura://summary/weekly`
 
 ## Privacy & security
