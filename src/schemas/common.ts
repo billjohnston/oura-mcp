@@ -23,7 +23,7 @@ export const CollectionInputSchema = z.object({
   before: DateTimeSchema.describe("Only return Oura records before this time. Converted to an Oura end_date."),
   page: z.number().int().min(1).default(1).describe("Oura page number."),
   limit: z.number().int().min(1).max(MAX_OURA_LIMIT).default(DEFAULT_LIMIT)
-    .describe("Local page-size hint used for pagination safety."),
+    .describe("Maximum number of records returned by this call. The Oura v2 API has no page-size parameter, so the cap is applied locally after fetching and also stops cursor pagination once it is reached. When records were dropped by the cap, truncated is true and has_more is true."),
   all_pages: z.boolean().default(false).describe("Fetch multiple pages up to max_pages."),
   max_pages: z.number().int().min(1).max(MAX_PAGES).default(DEFAULT_MAX_PAGES)
     .describe("Maximum pages to fetch when all_pages is true."),
@@ -119,7 +119,8 @@ export const CollectionOutputSchema = z.object({
   count: z.number().int().nonnegative(),
   records: z.array(z.unknown()),
   next_page: z.number().int().positive().optional(),
-  has_more: z.boolean(),
+  has_more: z.boolean().describe("True when more records exist beyond this response, either upstream (next_token) or because the limit cap dropped records."),
+  truncated: z.boolean().describe("True when the limit cap dropped records that had already been fetched. Raise limit or narrow after/before to see them."),
   pages_fetched: z.number().int().nonnegative()
 }).strict();
 

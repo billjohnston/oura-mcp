@@ -80,10 +80,19 @@ export class OuraClient {
     return { ...this.getCache().status(), http_cache };
   }
 
-  async list(path: string, params: ListParams = {}): Promise<{ records: unknown[]; next_page?: number; pages_fetched: number }> {
+  /**
+   * Read an Oura collection endpoint.
+   *
+   * `limit` is a cap on how many records this call returns, applied locally: the Oura v2
+   * API exposes no page-size parameter, only `start_date`, `end_date` and the opaque
+   * `next_token` cursor. Pagination therefore ends when the upstream cursor is exhausted
+   * or when `max_pages` / the cap is reached — never by comparing a page's length to
+   * `limit`, which is a number the API has never seen.
+   */
+  async list(path: string, params: ListParams = {}): Promise<{ records: unknown[]; next_page?: number; pages_fetched: number; has_more: boolean; truncated: boolean }> {
     const limit = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), MAX_OURA_LIMIT);
     const maxPages = params.all_pages ? Math.max(1, params.max_pages ?? 1) : 1;
-    const records: unknown[] = [];
+    const collected: unknown[] = [];
     let nextToken: string | undefined;
     let pages = 0;
 
@@ -92,14 +101,22 @@ export class OuraClient {
         ...ouraDateRange(params),
         next_token: nextToken
       });
-      const pageRecords = extractRecords(payload);
-      records.push(...pageRecords);
+      collected.push(...extractRecords(payload));
       pages += 1;
       nextToken = extractNextToken(payload);
-      if (!params.all_pages || !nextToken || pageRecords.length < limit) break;
+      // Stop on cursor exhaustion, on a satisfied cap, or on a single-page request.
+      if (!nextToken || collected.length >= limit || !params.all_pages) break;
     }
 
-    return { records, next_page: nextToken ? (params.page ?? 1) + pages : undefined, pages_fetched: pages };
+    const records = collected.slice(0, limit);
+    const truncated = collected.length > limit;
+    return {
+      records,
+      next_page: nextToken ? (params.page ?? 1) + pages : undefined,
+      pages_fetched: pages,
+      has_more: Boolean(nextToken) || truncated,
+      truncated
+    };
   }
 
   private extractCode(input: string): string {

@@ -73,7 +73,8 @@ function registerCollectionTool(server: McpServer, name: string, title: string, 
           count: records.records.length,
           records: records.records,
           next_page: result.next_page,
-          has_more: Boolean(result.next_page),
+          has_more: result.has_more,
+          truncated: result.truncated,
           pages_fetched: result.pages_fetched
         };
         return makeResponse(output, params.response_format, formatCollection(title, records.records, output));

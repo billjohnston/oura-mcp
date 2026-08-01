@@ -1,3 +1,43 @@
+## 0.5.0 - 2026-08-01
+
+### Fixed
+
+- **`limit` now actually limits.** The collection tools advertised `limit` (default 30,
+  min 1, max 100) as a real parameter, but it was never sent upstream and never truncated
+  anything: `limit=1` returned the entire window — 50 of 50 records in the regression
+  fixture. An agent asking for one record to keep its context small received the whole
+  history and had no way to know the number it passed was decorative. `limit` is now a
+  real cap on returned records, applied locally (the Oura v2 API exposes no page-size
+  parameter, only `start_date`/`end_date` and the `next_token` cursor), and the schema
+  description says exactly that instead of "local page-size hint used for pagination safety".
+- **`all_pages` no longer truncates data silently.** Pagination ended on
+  `pageRecords.length < limit`, a comparison against a number the Oura API had never seen.
+  The effect was inverted: with the *default* `limit=30`, any page smaller than 30 records
+  ended the loop after page 1 even with a live `next_token`, so agents summarizing a month
+  got a fraction of it and were told `has_more: false`; with a *small* limit the loop ran to
+  `max_pages`, so `limit=5` fetched 100 records in 5 HTTP calls while `limit=100` fetched 20
+  in one. Pagination now ends on the absence of `next_token` (or on `max_pages`, or once the
+  cap is filled) — asking for more never returns less.
+- **`oura://latest/readiness` returns one record.** The resource is described as "Most recent
+  Oura readiness record" (singular) and returned the whole window — 14 of 14 records, 2690
+  bytes instead of one. It now returns exactly the newest record. Note that `limit: 1` alone
+  would have returned the *oldest* one, since Oura serves collections oldest-first.
+
+### Changed
+
+- `CollectionOutputSchema` gains `truncated: boolean`, and `has_more` is now true when the
+  `limit` cap dropped records — not only when an upstream cursor remains. Previously an agent
+  could receive a silently shortened list flagged `has_more: false`. This is the output-contract
+  change behind the minor bump.
+
+### Added
+
+- `npm run test:pagination-limit` — regression gate over a synthetic paged Oura API driven by a
+  real MCP client, asserting that `limit=k` returns at most `k`, that `all_pages` with the
+  default limit follows `next_token` past page 1 and stops when the cursor is exhausted, and
+  that `oura://latest/readiness` returns exactly one record — the most recent. Wired into
+  `npm test`. Every fixture record is synthetic; no real Oura data is used.
+
 ## 0.4.11 - 2026-07-30
 
 ### Added / Fixed
