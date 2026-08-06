@@ -30,7 +30,9 @@ import { buildAgentManifest, formatAgentManifestMarkdown } from "../services/age
 import { buildPrivacyAudit } from "../services/audit.js";
 import { buildCapabilities } from "../services/capabilities.js";
 import { buildDataInventory, formatInventoryMarkdown } from "../services/inventory.js";
+import { buildCollectionOutput } from "../services/collection-output.js";
 import { buildConnectionStatus } from "../services/connection-status.js";
+import { buildDemoPayload } from "../services/demo.js";
 import { getConfig } from "../services/config.js";
 import { bulletList, formatCollection, makeError, makeResponse } from "../services/format.js";
 import { applyPrivacy, resolvePrivacyMode } from "../services/privacy.js";
@@ -66,18 +68,8 @@ function registerCollectionTool(server: McpServer, name: string, title: string, 
         const config = getConfig();
         const privacyMode = resolvePrivacyMode(config, params.privacy_mode, { explicit_user_intent: (params as { explicit_user_intent?: boolean }).explicit_user_intent });
         const result = await new OuraClient(config).list(endpoint, params);
-        const records = applyPrivacy(endpoint, { records: result.records }, privacyMode) as { records: unknown[] };
-        const output = {
-          endpoint,
-          privacy_mode: privacyMode,
-          count: records.records.length,
-          records: records.records,
-          next_page: result.next_page,
-          has_more: result.has_more,
-          truncated: result.truncated,
-          pages_fetched: result.pages_fetched
-        };
-        return makeResponse(output, params.response_format, formatCollection(title, records.records, output));
+        const output = buildCollectionOutput(endpoint, privacyMode, result);
+        return makeResponse(output, params.response_format, formatCollection(title, output.records, output));
       } catch (error) {
         return makeError((error as Error).message);
       }
@@ -208,48 +200,13 @@ export function registerOuraTools(server: McpServer): void {
       }
     },
     async ({ response_format }) => {
-      const today = new Date().toISOString().slice(0, 10);
-      const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-      const dayBefore = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
-      const payload = {
-        ok: true,
-        is_demo: true,
-        sample: {
-          oura_daily_summary: {
-            date: today,
-            readiness: { score: 78, temperature_deviation: -0.1, hrv_balance: 84 },
-            sleep: { score: 82, efficiency: 89, duration_min: 451, deep_min: 92, rem_min: 108 },
-            activity: { score: 86, steps: 9420, active_calories: 412, target_calories: 500 },
-            spo2: { average: 96.8 },
-          },
-          oura_wellness_context: {
-            window: "last_24h",
-            readiness_score: 78,
-            readiness_band: "good",
-            sleep_score: 82,
-            sleep_efficiency: 89,
-            hrv_balance: 84,
-            recommendation: "Solid readiness and efficient sleep — green light for moderate-to-high intensity. A protein-forward breakfast keeps HRV trending up.",
-          },
-          oura_list_daily_readiness: {
-            count: 3,
-            records: [
-              { day: today, score: 78, contributors: { hrv_balance: 84, resting_heart_rate: 71, sleep_balance: 76 } },
-              { day: yesterday, score: 74, contributors: { hrv_balance: 79, resting_heart_rate: 73, sleep_balance: 72 } },
-              { day: dayBefore, score: 69, contributors: { hrv_balance: 68, resting_heart_rate: 80, sleep_balance: 65 } },
-            ],
-          },
-        },
-        notes: [
-          "All sample data is synthetic; tagged with is_demo=true.",
-          "Real calls return live data from the Oura Cloud v2 API after OAuth setup.",
-        ],
-      };
+      const payload = await buildDemoPayload();
+      const context = payload.sample.oura_wellness_context;
       const markdown = bulletList("Oura Demo", {
         is_demo: true,
-        readiness_score: 78,
-        sleep_efficiency: 89,
-        recommendation: payload.sample.oura_wellness_context.recommendation,
+        readiness_score: context.readiness_score,
+        sleep_score: context.sleep_score,
+        recent_training_load: context.recent_training_load,
       });
       return makeResponse(payload, response_format, markdown);
     }
