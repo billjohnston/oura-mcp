@@ -12,5 +12,6 @@ MCP command: oura-mcp-server
 - OAuth env: OURA_CLIENT_ID, OURA_CLIENT_SECRET, OURA_REDIRECT_URI.
 - Optional env: OURA_TOKEN_PATH (token storage path), OURA_PRIVACY_MODE (summary|structured|raw, default structured), OURA_CACHE (true|sqlite to enable), OURA_CACHE_PATH.
 - Prefer JSON responses for automation and markdown responses for human summaries.
+- Collection list tools paginate with opaque next_token, not a page number. If truncated is true, raise limit or set all_pages; do not increment page.
 - Tokens stay local under ~/.ouramcp/tokens.json (or equivalent) and should never be printed.
 - Not medical advice. Use as trend context only — outputs are operational context, not medical, legal or financial advice.

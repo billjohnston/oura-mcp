@@ -1,3 +1,32 @@
+## 0.7.0 - 2026-08-13
+
+### Fixed
+
+- **Collection tools no longer advertise a fake integer page.** Oura v2 paginates with an
+  opaque `next_token` cursor. `page` (input) and `next_page` (output) were decorative: the
+  number was never sent upstream, and incrementing it could not resume or skip to a later
+  block. Agents that looped on `page = next_page` could fetch the same oldest page forever
+  or believe they had walked a window they had not. Tracked as `TODO(next_page)` since 0.6.0.
+
+### Changed
+
+- **`oura_list_*` now pass the real cursor through.** Input `next_token` is forwarded to
+  Oura as `next_token`. Output `next_token` is the upstream cursor, returned only when it
+  is safe to resume without skipping records (`truncated` is false). When the local `limit`
+  cap dropped already-fetched rows, `truncated` is true, `has_more` is true, and
+  `next_token` is omitted — raise `limit` or set `all_pages` instead of following a cursor.
+- `page` is removed from the collection input schema. A leftover `page` other than `1`
+  (the old default) is rejected with an error that names `next_token`, so a cached agent
+  loop cannot silently no-op.
+- Agent manifest rules, Hermes skill, capabilities flow and `docs/pagination.md` describe
+  the same contract: `has_more`, `next_token`, `truncated`, `limit` (oldest-end cap).
+
+### Added
+
+- `test:pagination-limit` round 4: resume via `next_token` actually advances the synthetic
+  cursor; a truncated slice omits `next_token`; the tool schema has `next_token` and not
+  `page` / `next_page`. Still synthetic fixtures only — no live Oura token.
+
 ## 0.6.1 - 2026-08-01
 
 ### Fixed

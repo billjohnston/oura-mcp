@@ -20,6 +20,12 @@
  *  (e) `limit` keeps the k OLDEST records of the window and the schema never said so, so
  *      an agent asking limit:1 for "my latest readiness" got the oldest one. The end is
  *      now named in the description the agent actually reads.
+ *
+ * Round 4 (0.7.0) closes the decorative page-number lie:
+ *  (g) `page` / `next_page` were integer fields that did not match Oura's next_token
+ *      cursor. Agents looping on page = next_page fetched the same oldest block forever.
+ *      The schema now exposes next_token, resume actually advances the synthetic cursor,
+ *      and a truncated slice omits next_token so a resume cannot skip dropped rows.
  */
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -324,6 +330,17 @@ try {
     check(`${tool.name} names the end limit cuts`, () => {
       assert.match(description, /oldest/i, `${tool.name}: limit must say it keeps the OLDEST end`);
     });
+    check(`${tool.name} advertises next_token, not page`, () => {
+      assert.equal(
+        tool.inputSchema?.properties?.page,
+        undefined,
+        `${tool.name} must not advertise page; Oura v2 has no page index`
+      );
+      assert.ok(
+        tool.inputSchema?.properties?.next_token,
+        `${tool.name} must expose next_token so agents can resume`
+      );
+    });
 
     if (tool.name === 'oura_list_daily_readiness') {
       check(`${tool.name} points at its own latest resource`, () => {
@@ -351,6 +368,71 @@ try {
       );
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // (g) ROUND 4: page / next_page were decorative. Oura paginates by next_token.
+  // An agent that did `page = next_page` kept fetching the same oldest block.
+  // ---------------------------------------------------------------------------
+  const readinessTool = toolList.tools.find((tool) => tool.name === 'oura_list_daily_readiness');
+  const inputProperties = readinessTool?.inputSchema?.properties ?? {};
+  const outputProperties = readinessTool?.outputSchema?.properties ?? {};
+  check('collection input schema has next_token, not page', () => {
+    assert.equal(inputProperties.page, undefined, 'page must not be advertised; it is not an Oura v2 parameter');
+    assert.ok(inputProperties.next_token, 'agents need next_token to resume a cursor');
+    assert.match(
+      inputProperties.next_token.description ?? '',
+      /opaque|cursor/i,
+      'next_token description must say it is an opaque cursor, not a page index'
+    );
+  });
+  check('collection output schema has next_token, not next_page', () => {
+    assert.equal(outputProperties.next_page, undefined, 'next_page was a decorative integer and must be gone');
+    if (readinessTool?.outputSchema) {
+      assert.ok(outputProperties.next_token, 'outputSchema is advertised, so it must expose next_token');
+    }
+  });
+
+  serve(50, 10);
+  const firstPage = await listReadiness({ limit: 10 });
+  check('a full untruncated page returns a resumable next_token', () => {
+    assert.equal(firstPage.count, 10);
+    assert.equal(firstPage.truncated, false);
+    assert.equal(firstPage.has_more, true);
+    assert.equal(typeof firstPage.next_token, 'string', 'next_token must be the opaque cursor, not a page number');
+    assert.match(firstPage.next_token, /\S/, 'next_token must be a non-empty cursor');
+    assert.equal(firstPage.records[0].id, 'synthetic-001');
+    assert.equal(firstPage.next_page, undefined, 'must not emit a fake next_page integer');
+  });
+
+  const resumed = await listReadiness({ limit: 10, next_token: firstPage.next_token });
+  check('passing next_token resumes instead of repeating page 1', () => {
+    assert.equal(resumed.records[0].id, 'synthetic-011', `expected to resume at record 11, got ${resumed.records[0]?.id} (synthetic-001 means the cursor was ignored)`);
+    assert.equal(resumed.count, 10);
+    assert.equal(resumed.truncated, false);
+  });
+  check('resume sent next_token upstream', () => {
+    const last = requestedUrls.at(-1);
+    assert.equal(last?.searchParams.get('next_token'), firstPage.next_token);
+  });
+
+  serve(50, 10);
+  const sliced = await listReadiness({ limit: 5 });
+  check('truncated slices omit next_token so resume cannot skip dropped rows', () => {
+    assert.equal(sliced.count, 5);
+    assert.equal(sliced.truncated, true);
+    assert.equal(sliced.has_more, true);
+    assert.equal(sliced.next_token, undefined, 'upstream cursor would skip records 6-10; it must not be advertised');
+    assert.equal(sliced.records[0].id, 'synthetic-001');
+  });
+
+  serve(12, 5);
+  const done = await listReadiness({ all_pages: true, max_pages: 5 });
+  check('exhausted cursor omits next_token and has_more', () => {
+    assert.equal(done.has_more, false);
+    assert.equal(done.truncated, false);
+    assert.equal(done.next_token, undefined);
+    assert.equal(done.count, 12);
+  });
 
   if (failures.length) throw new AggregateError(failures, 'Oura pagination/limit contract regressions');
   console.log(JSON.stringify({ ok: true, suite: 'pagination-limit', http_requests: requestedUrls.length }, null, 2));

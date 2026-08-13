@@ -72,13 +72,15 @@ export function buildAgentManifest(client: AgentClientName = "generic") {
       "Treat Oura health data as sensitive. Do not expose raw payloads unless the user asks for raw mode.",
       "Heart-rate, SpO2 and personal fields depend on ring generation, membership, app scopes and the user's consent; explain permission errors clearly.",
       "For Hermes, do not restart the gateway for normal Oura data access; reload MCP instead.",
-      "Do not provide medical diagnosis or treatment instructions. Frame outputs as health/training context."
+      "Do not provide medical diagnosis or treatment instructions. Frame outputs as health/training context.",
+      "Oura v2 paginates with an opaque next_token cursor, not a page number. When has_more is true and next_token is present, pass that token back with the same after/before window. When truncated is true, next_token is omitted: raise limit or set all_pages instead of looping."
     ],
     troubleshooting: [
       { symptom: "missing OURA_CLIENT_ID / OURA_CLIENT_SECRET / OURA_REDIRECT_URI", action: "Run `oura-mcp-server setup` or set OURA_* env vars." },
       { symptom: "401 or expired token", action: "Run `oura-mcp-server auth` again; tokens refresh automatically when refresh_token is present." },
       { symptom: "heart-rate or SpO2 endpoint forbidden", action: "Confirm Oura membership, ring support and granted scopes; re-authorize if needed." },
-      { symptom: "Hermes configured but tools unavailable", action: "Run `/reload-mcp` or `hermes mcp test oura`; do not restart gateway for normal reload." }
+      { symptom: "Hermes configured but tools unavailable", action: "Run `/reload-mcp` or `hermes mcp test oura`; do not restart gateway for normal reload." },
+      { symptom: "collection list loops forever or skips records", action: "Do not increment a page number. Pass next_token when present; if truncated is true, raise limit or set all_pages." }
     ],
     links: {
       github: "https://github.com/davidmosiah/ouramcp",
@@ -132,6 +134,7 @@ Use this skill whenever a user asks Hermes to inspect Oura readiness, activity, 
 - Start with \`mcp_oura_oura_connection_status\`.
 - Prefer \`mcp_oura_oura_daily_summary\` and \`mcp_oura_oura_weekly_summary\` before low-level endpoint calls.
 - Treat Oura data as sensitive. Do not request raw payloads unless the user explicitly asks.
+- Collection list tools paginate with \`next_token\`, not a page number. If \`truncated\` is true, raise \`limit\` or set \`all_pages\`; do not increment \`page\`.
 - Do not diagnose or treat medical conditions.
 - Reload MCP with \`/reload-mcp\` or \`hermes mcp test oura\`; do not restart the gateway for normal data access.
 `;

@@ -42,12 +42,14 @@ export function collectionInputSchema(latestResourceUri?: string) {
   return z.object({
     after: DateTimeSchema.describe("Only return Oura records after this time. Converted to an Oura start_date."),
     before: DateTimeSchema.describe("Only return Oura records before this time. Converted to an Oura end_date."),
-    page: z.number().int().min(1).default(1).describe("Oura page number."),
+    next_token: z.string().min(1).max(4096).optional()
+      .describe("Opaque Oura v2 cursor from a previous collection response. Pass it back unchanged with the same after/before window to resume. Oura has no integer page index and no page-size parameter; do not invent or increment a page number."),
     limit: z.number().int().min(1).max(MAX_OURA_LIMIT).default(DEFAULT_LIMIT)
-      .describe(`Maximum number of records returned by this call, kept from the OLDEST end of the window. Oura v2 serves collections oldest-first, has no sort parameter and no page-size parameter, so limit=1 returns the OLDEST record in the window, never the newest. ${recencyRoute(latestResourceUri)} The cap is applied locally after fetching and also stops cursor pagination once it is reached; when it dropped records, truncated is true and has_more is true.`),
-    all_pages: z.boolean().default(false).describe("Fetch multiple pages up to max_pages."),
+      .describe(`Maximum number of records returned by this call, kept from the OLDEST end of the window. Oura v2 serves collections oldest-first, has no sort parameter and no page-size parameter, so limit=1 returns the OLDEST record in the window, never the newest. ${recencyRoute(latestResourceUri)} The cap is applied locally after fetching and also stops cursor pagination once it is reached; when it dropped records, truncated is true and has_more is true. If truncated is true, raise limit or set all_pages — do not follow a cursor, because next_token is omitted whenever resuming would skip dropped records.`),
+    all_pages: z.boolean().default(false)
+      .describe("When true, follow the Oura next_token cursor up to max_pages in this one call. Resume later by passing the returned next_token with the same after/before window."),
     max_pages: z.number().int().min(1).max(MAX_PAGES).default(DEFAULT_MAX_PAGES)
-      .describe("Maximum pages to fetch when all_pages is true."),
+      .describe("Maximum upstream Oura pages to fetch in this call when all_pages is true. A runaway guard, not an Oura page index."),
     privacy_mode: PrivacyModeSchema,
     explicit_user_intent: ExplicitPrivacyIntentSchema,
     response_format: ResponseFormatSchema
@@ -143,9 +145,10 @@ export const CollectionOutputSchema = z.object({
   privacy_mode: PrivacyModeValueSchema,
   count: z.number().int().nonnegative(),
   records: z.array(z.unknown()),
-  next_page: z.number().int().positive().optional(),
-  has_more: z.boolean().describe("True when more records exist beyond this response, either upstream (next_token) or because the limit cap dropped records."),
-  truncated: z.boolean().describe("True when the limit cap dropped records that had already been fetched. Raise limit or narrow after/before to see them."),
+  next_token: z.string().min(1).optional()
+    .describe("Opaque Oura v2 cursor to resume from. Pass this back as input next_token with the same after/before window. Present only when more records exist upstream AND this call did not locally drop fetched records (truncated is false). When truncated is true, next_token is omitted: raise limit or set all_pages instead of following a cursor, which would skip the dropped records. Never increment a page number."),
+  has_more: z.boolean().describe("True when more records exist beyond this response, either upstream (a resumable next_token) or because the limit cap dropped records (truncated). If truncated is true, raise limit or set all_pages; if next_token is present, pass it back."),
+  truncated: z.boolean().describe("True when the limit cap dropped records that had already been fetched. Raise limit or set all_pages (or narrow after/before) to see them. next_token is omitted in this case so a resume cannot skip those rows."),
   pages_fetched: z.number().int().nonnegative()
 }).strict();
 

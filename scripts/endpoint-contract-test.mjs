@@ -41,6 +41,8 @@ try {
     assert.equal(requestUrl.searchParams.get('start_date'), '2026-07-08');
     assert.equal(requestUrl.searchParams.get('end_date'), '2026-07-15');
     assert.equal(result.records[0].id, 'synthetic-record');
+    assert.equal(result.next_page, undefined);
+    assert.equal(result.next_token, undefined, 'fixture has no upstream cursor');
   } catch (error) {
     failures.push(error);
   }
@@ -52,6 +54,32 @@ try {
       /Invalid Oura date range value/
     );
     assert.equal(requestedUrls.length, fetchCountBeforeInvalid, 'invalid dates must fail before an HTTP request');
+  } catch (error) {
+    failures.push(error);
+  }
+
+  try {
+    await assert.rejects(
+      client.list('/usercollection/daily_sleep', { page: 2 }),
+      /does not paginate by page number/
+    );
+  } catch (error) {
+    failures.push(error);
+  }
+
+  const fetchCountBeforeCursor = requestedUrls.length;
+  try {
+    await client.list('/usercollection/daily_sleep', { next_token: 'cursor-abc' });
+    const cursorUrl = requestedUrls.at(-1);
+    assert.equal(requestedUrls.length, fetchCountBeforeCursor + 1);
+    assert.equal(cursorUrl.searchParams.get('next_token'), 'cursor-abc');
+  } catch (error) {
+    failures.push(error);
+  }
+
+  try {
+    const firstPage = await client.list('/usercollection/daily_sleep', { page: 1 });
+    assert.equal(firstPage.records[0].id, 'synthetic-record');
   } catch (error) {
     failures.push(error);
   }
