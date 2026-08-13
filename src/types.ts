@@ -23,7 +23,7 @@ export interface OuraConfig {
 
 export interface OuraCollection<T = unknown> {
   records?: T[];
-  next_page?: number;
+  next_token?: string;
 }
 
 export interface ToolResponse<T> extends Record<string, unknown> {

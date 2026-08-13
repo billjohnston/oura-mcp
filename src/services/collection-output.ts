@@ -4,7 +4,7 @@ import { applyPrivacy } from "./privacy.js";
 /** The subset of `OuraClient.list` that shapes a collection response. */
 export interface CollectionListResult {
   records: unknown[];
-  next_page?: number;
+  next_token?: string;
   pages_fetched: number;
   has_more: boolean;
   truncated: boolean;
@@ -24,9 +24,9 @@ export function buildCollectionOutput(endpoint: string, privacyMode: PrivacyMode
     privacy_mode: privacyMode,
     count: normalized.records.length,
     records: normalized.records,
-    next_page: result.next_page,
     has_more: result.has_more,
     truncated: result.truncated,
-    pages_fetched: result.pages_fetched
+    pages_fetched: result.pages_fetched,
+    ...(result.next_token ? { next_token: result.next_token } : {})
   };
 }

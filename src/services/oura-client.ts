@@ -11,10 +11,20 @@ import { TokenStore } from "./token-store.js";
 export interface ListParams {
   after?: string;
   before?: string;
-  page?: number;
+  /** Opaque Oura v2 cursor from a previous list response. Not a page number. */
+  next_token?: string;
   limit?: number;
   all_pages?: boolean;
   max_pages?: number;
+}
+
+export interface ListResult {
+  records: unknown[];
+  /** Present only when it is safe to resume without skipping records. */
+  next_token?: string;
+  pages_fetched: number;
+  has_more: boolean;
+  truncated: boolean;
 }
 
 export interface LatestParams {
@@ -108,17 +118,21 @@ export class OuraClient {
    * and the only end reachable without walking the whole window. Callers that want the
    * newest record want `latest()`, not `limit: 1`.
    *
-   * TODO(next_page): `params.page` and the returned `next_page` are decorative — Oura v2
-   * paginates by opaque `next_token` cursor, so a page NUMBER cannot be sent upstream and
-   * cannot be resumed from. Same genre of defect as the old `limit`/`has_more` lies, left
-   * standing deliberately: removing them is a breaking output-schema change. Either drop
-   * both fields in the next major, or replace them with the real cursor.
+   * Resume with `params.next_token` from a previous response. Integer `page` / `next_page`
+   * are not Oura v2 parameters: a leftover `page` other than 1 is rejected so agents cannot
+   * loop or skip by incrementing a number the API has never seen.
+   *
+   * `next_token` is returned only when it is safe to resume without skipping records —
+   * i.e. when this call did not locally drop fetched rows (`truncated` is false). When
+   * `truncated` is true, raise `limit` or use `all_pages`; following the upstream cursor
+   * would skip the dropped rows.
    */
-  async list(path: string, params: ListParams = {}): Promise<{ records: unknown[]; next_page?: number; pages_fetched: number; has_more: boolean; truncated: boolean }> {
+  async list(path: string, params: ListParams = {}): Promise<ListResult> {
+    rejectDecorativePage(params);
     const limit = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), MAX_OURA_LIMIT);
     const maxPages = params.all_pages ? Math.max(1, params.max_pages ?? 1) : 1;
     const collected: unknown[] = [];
-    let nextToken: string | undefined;
+    let nextToken: string | undefined = params.next_token;
     let pages = 0;
 
     while (pages < maxPages) {
@@ -137,7 +151,7 @@ export class OuraClient {
     const truncated = collected.length > limit;
     return {
       records,
-      next_page: nextToken ? (params.page ?? 1) + pages : undefined,
+      next_token: truncated ? undefined : nextToken,
       pages_fetched: pages,
       has_more: Boolean(nextToken) || truncated,
       truncated
@@ -382,6 +396,20 @@ function extractNextToken(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
   const token = (payload as Record<string, unknown>).next_token;
   return typeof token === "string" && token ? token : undefined;
+}
+
+/**
+ * Oura v2 has no integer page index. `page: 1` is a no-op leftover from the old schema;
+ * any other number would previously be ignored while `next_page` still incremented, which
+ * is how agents looped forever or skipped data.
+ */
+function rejectDecorativePage(params: ListParams): void {
+  const leftoverPage = (params as { page?: unknown }).page;
+  if (leftoverPage === undefined) return;
+  if (leftoverPage === 1) return;
+  throw new Error(
+    "Oura v2 does not paginate by page number. Pass next_token from the previous collection response to resume; do not increment a page index."
+  );
 }
 
 function cleanParams(input: Record<string, string | number | boolean | undefined>): Record<string, string | number | boolean> {

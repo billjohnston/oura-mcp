@@ -36,6 +36,10 @@ try {
   assert.ok(manifest.hermes.common_tool_names.includes('mcp_oura_oura_connection_status'));
   assert.ok(JSON.stringify(manifest.hermes.recommended_config).includes(pinnedPackage));
   assert.ok(manifest.agent_rules.some((rule) => /do not restart/i.test(rule)));
+  assert.ok(
+    manifest.agent_rules.some((rule) => /next_token/i.test(rule) && /page number/i.test(rule)),
+    'Agent rules must tell agents to resume with next_token instead of a page number'
+  );
 
   const manifestResource = await client.readResource({ uri: 'oura://agent-manifest' });
   const text = manifestResource.contents[0]?.text ?? '';
@@ -69,6 +73,7 @@ try {
   const hermesConfig = readFileSync(setupPayload.client_config_path, 'utf8');
   assert.match(hermesConfig, new RegExp(pinnedPackage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(readFileSync(setupPayload.hermes_skill_path, 'utf8'), /mcp_oura_oura_connection_status/);
+  assert.match(readFileSync(setupPayload.hermes_skill_path, 'utf8'), /next_token/);
 
   const doctor = spawnSync(process.execPath, ['dist/index.js', 'doctor', '--client', 'hermes', '--json'], {
     encoding: 'utf8',

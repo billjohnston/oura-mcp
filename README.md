@@ -201,10 +201,11 @@ This package uses the official Oura Cloud API v2. When this README says `raw`, i
 
 - `oura_get_personal_info`
 
-**Daily collections** (paginated, with after/before filters and privacy-mode override)
+**Daily collections** (cursor-paginated with `next_token`, after/before filters and privacy-mode override)
 
 - `oura_list_daily_readiness`, `oura_list_daily_sleep`, `oura_list_daily_activity`, `oura_list_daily_spo2`
 - Offset ISO inputs keep their written calendar date when mapped to Oura's date-only `start_date` and `end_date` parameters; invalid dates fail before a network request.
+- Oura v2 has no integer page index. Resume with `next_token` from the previous response; if `truncated` is true, raise `limit` or set `all_pages`. See [docs/pagination.md](docs/pagination.md).
 
 **Detailed collections**
 

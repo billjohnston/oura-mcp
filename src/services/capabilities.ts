@@ -42,6 +42,7 @@ export function buildCapabilities() {
       "Use oura_daily_summary or oura_weekly_summary before low-level endpoint tools.",
       "Use oura_wellness_context when handing readiness/sleep/load context to Exercise Catalog.",
       "Treat health data as sensitive; avoid raw payloads unless explicitly requested.",
+      "Collection list tools resume with next_token, never a page number. If truncated is true, raise limit or set all_pages.",
       "Use Oura as trend context, not medical diagnosis. Escalate symptoms or abnormal vitals to clinicians."
     ],
     client_aliases: {
