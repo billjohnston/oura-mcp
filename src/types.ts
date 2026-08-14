@@ -14,6 +14,11 @@ export interface OuraConfig {
   clientId: string;
   clientSecret: string;
   redirectUri: string;
+  /**
+   * Oura personal access token. When set, it is used directly as the bearer
+   * token and the OAuth client credentials above are unused (and may be empty).
+   */
+  personalAccessToken?: string;
   scopes: string[];
   tokenPath: string;
   privacyMode: PrivacyMode;

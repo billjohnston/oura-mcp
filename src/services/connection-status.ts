@@ -24,6 +24,8 @@ export interface ConnectionStatus extends Record<string, unknown> {
     supported: boolean;
   };
   privacy_mode: PrivacyMode;
+  /** "pat" when OURA_PERSONAL_ACCESS_TOKEN is set; the OAuth app and token file are then unused. */
+  auth_mode: "pat" | "oauth";
   required_env: Record<string, boolean>;
   missing_env: string[];
   redirect_uri?: string;
@@ -90,14 +92,18 @@ export async function buildConnectionStatus(options: ConnectionStatusOptions = {
   const tokenPath = value("OURA_TOKEN_PATH") ?? join(homeDir, ".oura-mcp", "tokens.json");
   const cachePath = value("OURA_CACHE_PATH") ?? join(homeDir, ".oura-mcp", "cache.sqlite");
   const redirectUri = value("OURA_REDIRECT_URI");
+  const patMode = Boolean(env.OURA_PERSONAL_ACCESS_TOKEN?.trim());
   const requiredEnv = Object.fromEntries(REQUIRED_ENV.map((name) => [name, Boolean(value(name as keyof typeof sources.values))]));
-  const missingEnv = REQUIRED_ENV.filter((name) => !requiredEnv[name]);
+  // A PAT satisfies authentication on its own, so the OAuth app triple is not "missing".
+  const missingEnv = patMode ? [] : REQUIRED_ENV.filter((name) => !requiredEnv[name]);
   const token = await inspectToken(tokenPath, nowSeconds);
   const oauth = buildOAuthScopeStatus(token);
   const nodeSupported = Number(process.versions.node.split(".")[0] ?? 0) >= 20;
   const automaticAuthSupported = Boolean(redirectUri && isLocalHttpRedirect(redirectUri));
   const tokenUsable = token.exists && token.readable && token.secure_permissions !== false && (token.expired !== true || token.has_refresh_token === true);
-  const ready = missingEnv.length === 0 && tokenUsable && oauth.scope_status !== "missing_recommended";
+  // In PAT mode there is no token file and no granted-scope list to inspect: the PAT
+  // carries whatever scopes it was created with, and only a live call can reveal them.
+  const ready = patMode || (missingEnv.length === 0 && tokenUsable && oauth.scope_status !== "missing_recommended");
   const ok = ready && nodeSupported;
   const clientChecks = options.client === "hermes" ? { hermes: await inspectHermesClient(homeDir) } : undefined;
 
@@ -110,6 +116,7 @@ export async function buildConnectionStatus(options: ConnectionStatusOptions = {
       supported: nodeSupported
     },
     privacy_mode: parsePrivacyMode(value("OURA_PRIVACY_MODE")),
+    auth_mode: patMode ? "pat" : "oauth",
     required_env: requiredEnv,
     missing_env: missingEnv,
     redirect_uri: redirectUri,
@@ -128,8 +135,17 @@ export async function buildConnectionStatus(options: ConnectionStatusOptions = {
       path: cachePath
     },
     client_checks: clientChecks,
-    next_steps: buildNextSteps({ missingEnv, token, nodeSupported, automaticAuthSupported, redirectUri, oauth })
+    next_steps: patMode
+      ? buildPatNextSteps(nodeSupported)
+      : buildNextSteps({ missingEnv, token, nodeSupported, automaticAuthSupported, redirectUri, oauth })
   };
+}
+
+function buildPatNextSteps(nodeSupported: boolean): string[] {
+  const steps: string[] = [];
+  if (!nodeSupported) steps.push(`Upgrade to Node 20 or newer (current: ${process.versions.node}).`);
+  steps.push("Authenticated with OURA_PERSONAL_ACCESS_TOKEN. Call a data tool to confirm the token is live.");
+  return steps;
 }
 
 function parsePrivacyMode(value: string | undefined): PrivacyMode {

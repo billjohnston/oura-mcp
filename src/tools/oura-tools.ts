@@ -53,6 +53,15 @@ function client(): OuraClient {
   return new OuraClient(getConfig());
 }
 
+/**
+ * Read the env var directly rather than going through getConfig(), which throws when
+ * neither a PAT nor the OAuth triple is set. Tool registration runs on every request
+ * in HTTP mode and must never throw.
+ */
+function isPatMode(): boolean {
+  return Boolean(process.env.OURA_PERSONAL_ACCESS_TOKEN?.trim());
+}
+
 function registerCollectionTool(server: McpServer, name: string, title: string, endpoint: string, description: string, latestResourceUri?: string): void {
   server.registerTool(
     name,
@@ -361,6 +370,10 @@ export function registerOuraTools(server: McpServer): void {
     }
   );
 
+  // The authorization-code tools only make sense when this server holds an Oura OAuth
+  // app. Under a personal access token there is no grant to obtain, so registering them
+  // would hand the model three tools that can only fail.
+  if (!isPatMode()) {
   server.registerTool("oura_get_auth_url", {
     title: "Get Oura OAuth URL",
     description: "Generate an Oura OAuth authorization URL. Use this first when no local token exists.",
@@ -393,6 +406,7 @@ export function registerOuraTools(server: McpServer): void {
       return makeError((error as Error).message);
     }
   });
+  }
 
   server.registerTool("oura_get_personal_info", {
     title: "Get Oura Personal Info",
@@ -468,6 +482,8 @@ export function registerOuraTools(server: McpServer): void {
     return makeResponse(audit, response_format, bulletList("Oura Privacy Audit", audit));
   });
 
+  // Revocation targets an OAuth grant; a PAT is revoked from the Oura web console.
+  if (!isPatMode()) {
   server.registerTool("oura_revoke_access", {
     title: "Revoke Oura OAuth Access",
     description: "Revoke the current Oura OAuth grant and delete the local token file. Use only when the user explicitly wants to disconnect Oura. Gated by explicit_user_intent: true (requires explicit user intent).",
@@ -495,6 +511,7 @@ export function registerOuraTools(server: McpServer): void {
       return makeError((error as Error).message);
     }
   });
+  }
 
   server.registerTool("oura_daily_summary", {
     title: "Oura Daily Recovery Summary",

@@ -223,6 +223,13 @@ export class OuraClient {
     });
 
     if (response.status === 401) {
+      // Nothing to refresh in PAT mode — a 401 means the token is wrong or revoked.
+      if (this.config.personalAccessToken) {
+        throw new Error(
+          "Oura API rejected the personal access token (HTTP 401). Check OURA_PERSONAL_ACCESS_TOKEN " +
+          "against https://cloud.ouraring.com/personal-access-tokens."
+        );
+      }
       const refreshed = await this.refreshToken(true);
       const retry = await this.fetchWithRetry(url, {
         method,
@@ -246,6 +253,12 @@ export class OuraClient {
   }
 
   private async getValidToken(): Promise<OuraTokenSet> {
+    // A PAT is already a bearer token for api.ouraring.com/v2 and has no refresh
+    // counterpart, so it bypasses the token store, its lock file and the whole
+    // authorization-code flow.
+    if (this.config.personalAccessToken) {
+      return { access_token: this.config.personalAccessToken };
+    }
     const tokens = await this.tokenStore.read();
     if (!tokens?.access_token) {
       throw new Error("Oura token not found. Run oura-mcp-server auth, or use oura_get_auth_url then oura_exchange_code.");

@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.github
+docs
+examples
+assets
+scripts
+*.md
+!README.md

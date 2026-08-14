@@ -261,6 +261,7 @@ export const ConnectionStatusOutputSchema = z.object({
   client: AgentClientSchema.optional(),
   node: z.object({ version: z.string(), supported: z.boolean() }).strict(),
   privacy_mode: PrivacyModeValueSchema,
+  auth_mode: z.enum(["pat", "oauth"]),
   required_env: z.record(z.string(), z.boolean()),
   missing_env: z.array(z.string()),
   redirect_uri: z.string().optional(),

@@ -1,3 +1,37 @@
+> ## Fork notice
+>
+> This is a fork of [davidmosiah/oura-mcp](https://github.com/davidmosiah/oura-mcp) (MIT),
+> adapted to run as a self-hosted, internet-reachable MCP server rather than a local
+> stdio one. Everything below is upstream's documentation and still applies; the
+> divergences are:
+>
+> **1. Personal access token auth.** Set `OURA_PERSONAL_ACCESS_TOKEN` (from
+> [cloud.ouraring.com/personal-access-tokens](https://cloud.ouraring.com/personal-access-tokens))
+> and the `OURA_CLIENT_ID` / `OURA_CLIENT_SECRET` / `OURA_REDIRECT_URI` triple becomes
+> optional. A PAT is already a bearer token for the v2 API, so it bypasses the token
+> store, its file lock and the interactive authorization-code flow entirely. In this mode
+> `oura_get_auth_url`, `oura_exchange_code` and `oura_revoke_access` are not registered
+> (24 tools instead of 27) and `oura_connection_status` reports `auth_mode: "pat"`.
+>
+> **2. OAuth 2.1 gate on the HTTP transport.** Upstream's `--http` mode serves `/mcp`
+> with no authentication, which is fine on loopback and unacceptable behind a public
+> hostname. This fork makes the server its own OAuth 2.1 authorization server —
+> RFC 8414/9728 discovery, RFC 7591 dynamic client registration, a consent page gated on
+> `OAUTH_CLIENT_SECRET`, and PKCE — and requires a bearer token on `/mcp`. `/health` and
+> `/.well-known/*` stay open. The endpoint is mounted at both `/` and `/mcp`, because
+> claude.ai posts to the resource URL root while the Claude Code CLI posts to `/mcp`.
+> The HTTP transport refuses to start without `OAUTH_CLIENT_SECRET` unless you set
+> `OURA_MCP_NO_AUTH=true`.
+>
+> **3. Container packaging.** A `Dockerfile` and a GHCR publish job. `HOME` defaults to
+> `/data` so the token store and optional cache land on a mounted volume, the listener
+> binds `0.0.0.0`, and `SIGTERM`/`SIGINT` shut the server down cleanly.
+>
+> Added env vars: `SERVER_URL` (OAuth issuer; must equal the public URL),
+> `OAUTH_CLIENT_SECRET`, `TOKENS_PATH`, `OURA_PERSONAL_ACCESS_TOKEN`, `OURA_MCP_NO_AUTH`.
+>
+> Deployment notes for the homelab this runs in live in `nixos-config/docs/oura-mcp-setup.md`.
+
 <!-- delx-wellness header v2 -->
 <h1 align="center">Oura MCP</h1>
 
