@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Lets the image be rebuilt without a dummy commit — needed for the first run,
+  # since enabling Actions on a fork does not retroactively run earlier pushes.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
