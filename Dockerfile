@@ -46,8 +46,15 @@ ENV HOME=/data \
 VOLUME ["/data"]
 EXPOSE 3000
 
-HEALTHCHECK --interval=60s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -f "http://localhost:${PORT}/health" || exit 1
+# Podman fires the first healthcheck within ~100ms of container start, well before
+# node has bound the port. It records that as health_status=starting, but the
+# transient systemd unit wrapping the check still exits non-zero, which is enough
+# to make `nixos-rebuild switch` report a failed unit and return exit 4.
+# --retry-connrefused rides out the startup window (and --retry also covers 5xx),
+# so the check only reports failure when the server is genuinely unhealthy.
+HEALTHCHECK --interval=60s --timeout=15s --start-period=20s --retries=3 \
+  CMD curl -fsS --retry 5 --retry-connrefused --retry-delay 1 \
+      "http://localhost:${PORT}/health" || exit 1
 
 # No argv: runCliCommand() runs before transport selection, so a stray argument
 # would make the process print CLI output and exit instead of serving.
