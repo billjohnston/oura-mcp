@@ -30,7 +30,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "smoke": "node scripts/smoke-tools.mjs",
-    "test": "npm run typecheck && npm run build && npm run smoke && npm run smoke:http && npm run test:endpoint-contracts && npm run test:pagination-limit && npm run test:summary && npm run test:privacy-cache && npm run test:cli-ux && npm run test:agent-readiness && npm run test:hermes-agent && npm run test:metadata && npm run test:http-retry && npm run test:http-cache && npm run test:pat-mode",
+    "test": "npm run typecheck && npm run build && npm run smoke && npm run smoke:http && npm run test:endpoint-contracts && npm run test:pagination-limit && npm run test:summary && npm run test:privacy-cache && npm run test:cli-ux && npm run test:agent-readiness && npm run test:hermes-agent && npm run test:metadata && npm run test:http-retry && npm run test:http-cache && npm run test:pat-mode && npm run test:summary-window && npm run test:zones",
     "test:endpoint-contracts": "node scripts/endpoint-contract-test.mjs",
     "test:pagination-limit": "node scripts/pagination-limit-test.mjs",
     "test:summary": "node scripts/summary-fixture-test.mjs",
@@ -43,7 +43,9 @@
     "test:metadata": "node scripts/metadata-check.mjs",
     "test:http-retry": "node scripts/http-retry-test.mjs",
     "test:http-cache": "node scripts/http-cache-test.mjs",
-    "test:pat-mode": "node scripts/pat-mode-test.mjs"
+    "test:pat-mode": "node scripts/pat-mode-test.mjs",
+    "test:summary-window": "node scripts/summary-window-test.mjs",
+    "test:zones": "node scripts/zones-test.mjs"
   },
   "keywords": [
     "mcp",

@@ -162,19 +162,19 @@ try {
   // Old behavior: page 1 returned 10 records, 10 < 30 broke the loop, 1 page fetched.
   // ---------------------------------------------------------------------------
   serve(50, 10);
-  const paged = await listReadiness({ all_pages: true, max_pages: 5 });
+  const paged = await listReadiness({ sort: 'asc', all_pages: true, max_pages: 5 });
   check('all_pages with default limit keeps paging', () => {
     assert.ok(
       paged.pages_fetched > 1,
       `all_pages must follow next_token past page 1, fetched only ${paged.pages_fetched} page(s)`
     );
-    assert.equal(paged.pages_fetched, 3, 'must fetch pages until the 30-record cap is reached');
+    assert.equal(paged.pages_fetched, 3, 'ascending must fetch pages until the 30-record cap is reached');
     assert.equal(paged.count, 30, `expected the default cap of 30 records, got ${paged.count}`);
   });
 
   // Pagination ends on the ABSENCE of next_token, not on a page-size comparison.
   serve(12, 5);
-  const exhausted = await listReadiness({ all_pages: true, max_pages: 5 });
+  const exhausted = await listReadiness({ sort: 'asc', all_pages: true, max_pages: 5 });
   check('all_pages stops when next_token is gone', () => {
     assert.equal(exhausted.pages_fetched, 3, 'must fetch exactly the 3 pages the cursor offers');
     assert.equal(exhausted.count, 12, `expected all 12 synthetic records, got ${exhausted.count}`);
@@ -182,12 +182,24 @@ try {
     assert.equal(exhausted.truncated, false);
   });
 
-  // A small limit must fetch LESS, never more. Old behavior paged until max_pages.
+  // A small limit must fetch LESS, never more — ascending, where stopping early is sound.
+  // Descending cannot take this shortcut: the newest record is on the LAST page.
   serve(50, 10);
-  const smallLimitPaged = await listReadiness({ all_pages: true, max_pages: 5, limit: 5 });
+  const smallLimitPaged = await listReadiness({ sort: 'asc', all_pages: true, max_pages: 5, limit: 5 });
   check('small limit does not page further than a large one', () => {
     assert.equal(smallLimitPaged.count, 5, `limit=5 must return 5 records, got ${smallLimitPaged.count}`);
-    assert.equal(smallLimitPaged.pages_fetched, 1, `limit=5 must stop after 1 page, fetched ${smallLimitPaged.pages_fetched}`);
+    assert.equal(smallLimitPaged.pages_fetched, 1, `asc limit=5 must stop after 1 page, fetched ${smallLimitPaged.pages_fetched}`);
+  });
+
+  // The cost of desc, pinned so it cannot regress into a silent page-1 answer.
+  serve(50, 10);
+  const descPaged = await listReadiness({ limit: 5 });
+  check('desc walks the window to reach the newest record', () => {
+    assert.equal(descPaged.count, 5);
+    assert.equal(descPaged.pages_fetched, 5, 'desc must exhaust the cursor before it can know which records are newest');
+    assert.equal(descPaged.records[0].id, 'synthetic-050', 'desc must return the NEWEST record first');
+    assert.equal(descPaged.records[4].id, 'synthetic-046', 'and the 5 newest in descending order');
+    assert.equal(descPaged.cursor_exhausted, true);
   });
 
   check('max_pages still bounds the loop', () => {
@@ -280,37 +292,55 @@ try {
   });
 
   // ---------------------------------------------------------------------------
-  // (e) ROUND 2: `limit` cuts from the OLDEST end, and the SCHEMA must say so.
-  // The behavior is deliberate — see CHANGELOG 0.6.0 — but a true description that
-  // omits which end is the same trap that produced defect (c): an agent asking
-  // limit:1 for "my latest readiness" gets the oldest record in the window.
+  // (e) ROUND 5: `sort` replaces the oldest-end cap.
+  // Rounds 2-4 kept patching the DESCRIPTION of a surprising default: limit:1 returned
+  // the OLDEST record, and the schema needed a paragraph to warn about it. A parameter
+  // that needs 200 words to be safe is the wrong parameter. `limit` now just means "how
+  // many" and `sort` says from which end, defaulting to newest-first.
   // ---------------------------------------------------------------------------
   serve(50, 50);
-  const oldestEnd = await listReadiness({ limit: 1 });
-  check('limit keeps the oldest end of the window', () => {
-    assert.equal(oldestEnd.count, 1);
+  const newestDefault = await listReadiness({ limit: 1 });
+  check('limit:1 returns the NEWEST record by default', () => {
+    assert.equal(newestDefault.count, 1);
+    assert.equal(newestDefault.sort, 'desc', 'the response must report which end it used');
     assert.equal(
-      oldestEnd.records[0].id,
+      newestDefault.records[0].id,
+      'synthetic-050',
+      `limit:1 must mean "the latest one"; got ${newestDefault.records[0]?.id}`
+    );
+  });
+
+  serve(50, 50);
+  const oldestExplicit = await listReadiness({ limit: 1, sort: 'asc' });
+  check('sort:asc still reaches the oldest end', () => {
+    assert.equal(oldestExplicit.sort, 'asc');
+    assert.equal(
+      oldestExplicit.records[0].id,
       'synthetic-001',
-      `limit is documented as an oldest-end cap; got ${oldestEnd.records[0]?.id}`
+      `sort:asc must return the oldest record; got ${oldestExplicit.records[0]?.id}`
     );
   });
 
   const toolList = await client.listTools();
-  const limitDescription = toolList.tools
+  const readinessProperties = toolList.tools
     .find((tool) => tool.name === 'oura_list_daily_readiness')
-    ?.inputSchema?.properties?.limit?.description ?? '';
-  check('the limit schema names which end it cuts', () => {
-    assert.match(
+    ?.inputSchema?.properties ?? {};
+  const limitDescription = readinessProperties.limit?.description ?? '';
+  check('limit no longer needs a warning to be safe', () => {
+    assert.doesNotMatch(
       limitDescription,
       /oldest/i,
-      'the description an agent actually reads must say the cap keeps the OLDEST records'
+      'limit must no longer be an oldest-end cap that has to warn about itself'
     );
-    assert.match(
-      limitDescription,
-      /oura:\/\/latest\//,
-      'and must point at the resource that answers "most recent", or limit:1 stays a trap'
+    assert.ok(
+      limitDescription.length < 160,
+      `limit needed ${limitDescription.length} characters to explain; the point of sort is that it does not`
     );
+  });
+  check('sort is advertised with its default', () => {
+    assert.ok(readinessProperties.sort, 'agents need to see sort to use it');
+    assert.equal(readinessProperties.sort.default, 'desc', 'the default must be newest-first');
+    assert.match(readinessProperties.sort.description ?? '', /newest/i);
   });
 
   // ---------------------------------------------------------------------------
@@ -326,9 +356,10 @@ try {
   });
 
   for (const tool of listTools) {
-    const description = tool.inputSchema?.properties?.limit?.description ?? '';
-    check(`${tool.name} names the end limit cuts`, () => {
-      assert.match(description, /oldest/i, `${tool.name}: limit must say it keeps the OLDEST end`);
+    const description = tool.inputSchema?.properties?.sort?.description ?? '';
+    check(`${tool.name} exposes sort with a newest-first default`, () => {
+      assert.equal(tool.inputSchema?.properties?.sort?.default, 'desc', `${tool.name}: sort must default to newest-first`);
+      assert.match(description, /newest/i, `${tool.name}: sort must say which end desc keeps`);
     });
     check(`${tool.name} advertises next_token, not page`, () => {
       assert.equal(
@@ -392,8 +423,10 @@ try {
     }
   });
 
+  // Resume is an ASCENDING concept: a descending read already consumed the window, so its
+  // cursor points at older records the caller deliberately ranked past.
   serve(50, 10);
-  const firstPage = await listReadiness({ limit: 10 });
+  const firstPage = await listReadiness({ sort: 'asc', limit: 10 });
   check('a full untruncated page returns a resumable next_token', () => {
     assert.equal(firstPage.count, 10);
     assert.equal(firstPage.truncated, false);
@@ -404,7 +437,7 @@ try {
     assert.equal(firstPage.next_page, undefined, 'must not emit a fake next_page integer');
   });
 
-  const resumed = await listReadiness({ limit: 10, next_token: firstPage.next_token });
+  const resumed = await listReadiness({ sort: 'asc', limit: 10, next_token: firstPage.next_token });
   check('passing next_token resumes instead of repeating page 1', () => {
     assert.equal(resumed.records[0].id, 'synthetic-011', `expected to resume at record 11, got ${resumed.records[0]?.id} (synthetic-001 means the cursor was ignored)`);
     assert.equal(resumed.count, 10);
@@ -416,7 +449,13 @@ try {
   });
 
   serve(50, 10);
-  const sliced = await listReadiness({ limit: 5 });
+  const descNoResume = await listReadiness({ limit: 10 });
+  check('descending reads do not advertise a resume cursor', () => {
+    assert.equal(descNoResume.next_token, undefined, 'a desc cursor points at OLDER records; offering it invites a backwards walk');
+  });
+
+  serve(50, 10);
+  const sliced = await listReadiness({ sort: 'asc', limit: 5 });
   check('truncated slices omit next_token so resume cannot skip dropped rows', () => {
     assert.equal(sliced.count, 5);
     assert.equal(sliced.truncated, true);
@@ -426,12 +465,13 @@ try {
   });
 
   serve(12, 5);
-  const done = await listReadiness({ all_pages: true, max_pages: 5 });
+  const done = await listReadiness({ sort: 'asc', all_pages: true, max_pages: 5 });
   check('exhausted cursor omits next_token and has_more', () => {
     assert.equal(done.has_more, false);
     assert.equal(done.truncated, false);
     assert.equal(done.next_token, undefined);
     assert.equal(done.count, 12);
+    assert.equal(done.cursor_exhausted, true);
   });
 
   if (failures.length) throw new AggregateError(failures, 'Oura pagination/limit contract regressions');

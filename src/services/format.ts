@@ -28,6 +28,61 @@ export function bulletList(title: string, fields: Record<string, unknown>): stri
   return lines.join("\n");
 }
 
+/**
+ * Fields worth showing per record, in the order a reader wants them.
+ *
+ * Oura names, not Strava's. The previous list asked for `start_date`, `sport_type`,
+ * `moving_time` and `total_elevation_gain` — none of which Oura sends — so a workout
+ * rendered as "start: n/a, sport: n/a" while `distance` survived purely because the two
+ * schemas happen to share that one name.
+ */
+const RECORD_FIELDS: Array<{ key: string; label: string; format?: (value: unknown) => string }> = [
+  { key: "activity", label: "activity" },
+  { key: "label", label: "label" },
+  { key: "type", label: "type" },
+  { key: "intensity", label: "intensity" },
+  { key: "score", label: "score" },
+  { key: "start_datetime", label: "start" },
+  { key: "end_datetime", label: "end" },
+  { key: "duration_seconds", label: "duration", format: (value) => formatDuration(value) },
+  { key: "bedtime_start", label: "bedtime start" },
+  { key: "bedtime_end", label: "bedtime end" },
+  { key: "total_sleep_duration", label: "slept", format: (value) => formatDuration(value) },
+  { key: "efficiency", label: "efficiency" },
+  { key: "average_hrv", label: "average HRV" },
+  { key: "lowest_heart_rate", label: "lowest HR" },
+  { key: "average_heart_rate", label: "average HR" },
+  { key: "steps", label: "steps" },
+  { key: "active_calories", label: "active calories" },
+  { key: "total_calories", label: "total calories" },
+  { key: "calories", label: "calories" },
+  { key: "distance", label: "distance_m" },
+  { key: "equivalent_walking_distance", label: "walking equivalent_m" },
+  { key: "spo2_percentage", label: "SpO2 %" },
+  { key: "temperature_deviation", label: "temp deviation" }
+];
+
+function formatDuration(value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return String(value);
+  const minutes = Math.round(value / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+/**
+ * A heading a human can scan: date, then what it was.
+ *
+ * Never the bare UUID — a 36-character opaque id as a heading is noise for a reader and
+ * an invitation for a model to invent one. The id is still emitted as a field, because
+ * `oura_get_workout` can act on it.
+ */
+function recordHeading(object: Record<string, unknown>, index: number): string {
+  const parts = [object.day, object.activity ?? object.label ?? object.type]
+    .filter((part) => typeof part === "string" && part)
+    .map(String);
+  return parts.length ? parts.join(" · ") : `record ${index + 1}`;
+}
+
 export function formatCollection(title: string, records: unknown[], meta: Record<string, unknown>): string {
   const metaLines = Object.entries(meta)
     .filter(([key, value]) => key !== "records" && value !== undefined && value !== null)
@@ -37,16 +92,13 @@ export function formatCollection(title: string, records: unknown[], meta: Record
   for (const [index, record] of preview.entries()) {
     if (record && typeof record === "object") {
       const object = record as Record<string, unknown>;
-      const id = object.id ?? object.id_str ?? `item-${index + 1}`;
-      const start = object.start_date ?? object.start_date_local ?? object.created_at ?? object.updated_at ?? "n/a";
-      const sport = object.sport_type ?? object.type ?? "n/a";
-      lines.push(`## ${String(id)}`);
-      if (object.name) lines.push(`- **name**: ${String(object.name)}`);
-      lines.push(`- **start/created**: ${String(start)}`);
-      lines.push(`- **sport/type**: ${String(sport)}`);
-      if (object.distance !== undefined) lines.push(`- **distance_m**: ${String(object.distance)}`);
-      if (object.moving_time !== undefined) lines.push(`- **moving_time_s**: ${String(object.moving_time)}`);
-      if (object.total_elevation_gain !== undefined) lines.push(`- **elevation_m**: ${String(object.total_elevation_gain)}`);
+      lines.push(`## ${recordHeading(object, index)}`);
+      for (const field of RECORD_FIELDS) {
+        const value = object[field.key];
+        if (value === undefined || value === null) continue;
+        lines.push(`- **${field.label}**: ${field.format ? field.format(value) : formatMarkdownValue(value)}`);
+      }
+      if (typeof object.id === "string") lines.push(`- **id**: \`${object.id}\``);
       lines.push("");
     } else {
       lines.push(`- ${JSON.stringify(record)}`);

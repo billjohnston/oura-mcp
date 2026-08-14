@@ -24,7 +24,10 @@ import {
   SummaryOutputSchema,
   WeeklySummaryInputSchema,
   WellnessContextInputSchema,
-  WellnessContextOutputSchema
+  WellnessContextOutputSchema,
+  WorkoutZonesInputSchema,
+  WorkoutZonesOutputSchema,
+  IdInputSchema
 } from "../schemas/common.js";
 import { buildAgentManifest, formatAgentManifestMarkdown } from "../services/agent-manifest.js";
 import { buildPrivacyAudit } from "../services/audit.js";
@@ -38,6 +41,7 @@ import { bulletList, formatCollection, makeError, makeResponse } from "../servic
 import { applyPrivacy, resolvePrivacyMode } from "../services/privacy.js";
 import { buildDailySummary, buildWeeklySummary, formatSummaryMarkdown } from "../services/summary.js";
 import { buildWellnessContext, formatWellnessContextMarkdown } from "../services/context.js";
+import { formatZoneMarkdown, rollupWorkoutZones, type WorkoutLike, type WorkoutZoneRollup } from "../services/zones.js";
 import {
   buildProfileSummary,
   getOnboardingFlow,
@@ -60,6 +64,65 @@ function client(): OuraClient {
  */
 function isPatMode(): boolean {
   return Boolean(process.env.OURA_PERSONAL_ACCESS_TOKEN?.trim());
+}
+
+function asWorkout(record: unknown): WorkoutLike | undefined {
+  if (!record || typeof record !== "object") return undefined;
+  const row = record as Record<string, unknown>;
+  const str = (value: unknown) => (typeof value === "string" ? value : undefined);
+  return {
+    id: str(row.id),
+    day: str(row.day),
+    activity: str(row.activity),
+    intensity: str(row.intensity),
+    start_datetime: str(row.start_datetime),
+    end_datetime: str(row.end_datetime)
+  };
+}
+
+/** Either the one workout named by id, or the newest few in a date range. */
+async function resolveWorkouts(
+  oura: OuraClient,
+  params: { workout_id?: string; after?: string; before?: string; max_workouts: number }
+): Promise<WorkoutLike[]> {
+  const endpoint = "/usercollection/workout";
+  if (params.workout_id) {
+    const workout = asWorkout(await oura.getById(endpoint, params.workout_id));
+    return workout ? [workout] : [];
+  }
+  const listed = await oura.list(endpoint, {
+    after: params.after,
+    before: params.before,
+    limit: params.max_workouts,
+    sort: "desc"
+  });
+  return listed.records.map(asWorkout).filter((workout): workout is WorkoutLike => Boolean(workout));
+}
+
+/**
+ * HRmax, preferring a measured value.
+ *
+ * 220-age is the fallback, not the goal: it is a population regression with roughly
+ * +/-10-12 bpm of individual scatter, so a zone edge derived from it can be a whole zone
+ * out for a given person. The source is reported so the caller knows which they got.
+ */
+async function resolveHrmax(
+  oura: OuraClient,
+  provided?: number
+): Promise<{ hrmax: number; source: "provided" | "estimated_220_minus_age"; age?: number }> {
+  if (provided) return { hrmax: provided, source: "provided" };
+  const info = await oura.get("/usercollection/personal_info");
+  const age = isObjectRecord(info) && typeof info.age === "number" ? info.age : undefined;
+  if (age === undefined) {
+    throw new Error(
+      "Cannot determine HRmax: no age on the Oura personal_info record and no hrmax argument. Pass hrmax explicitly."
+    );
+  }
+  return { hrmax: 220 - age, source: "estimated_220_minus_age", age };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function registerCollectionTool(server: McpServer, name: string, title: string, endpoint: string, description: string, latestResourceUri?: string): void {
@@ -512,6 +575,61 @@ export function registerOuraTools(server: McpServer): void {
     }
   });
   }
+
+  server.registerTool("oura_get_workout", {
+    title: "Get Oura Workout",
+    description: "Fetch a single Oura workout by its document id, as returned by oura_list_workouts.",
+    inputSchema: IdInputSchema.shape,
+    outputSchema: EndpointDataOutputSchema.shape,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async ({ id, response_format, privacy_mode, explicit_user_intent }) => {
+    try {
+      const config = getConfig();
+      const endpoint = "/usercollection/workout";
+      const privacyMode = resolvePrivacyMode(config, privacy_mode, { explicit_user_intent });
+      const data = applyPrivacy(endpoint, await new OuraClient(config).getById(endpoint, String(id)), privacyMode);
+      return makeResponse({ endpoint, privacy_mode: privacyMode, data }, response_format, bulletList("Oura Workout", data as Record<string, unknown>));
+    } catch (error) {
+      return makeError((error as Error).message);
+    }
+  });
+
+  server.registerTool("oura_workout_zones", {
+    title: "Oura Workout Heart-Rate Zones",
+    description:
+      "Minutes spent in each heart-rate zone during a workout, computed from Oura's heart-rate samples intersected with the workout window. " +
+      "Zones are the standard five bands of HRmax. Pass hrmax when you know it; otherwise it is estimated as 220-age from personal_info, which is only a rough guide. " +
+      "Always read data_completeness_pct alongside the minutes: optical heart-rate drops out during movement, and an incomplete window makes every zone total read low. Read-only and non-medical.",
+    inputSchema: WorkoutZonesInputSchema.shape,
+    outputSchema: WorkoutZonesOutputSchema.shape,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (params) => {
+    try {
+      const config = getConfig();
+      const oura = new OuraClient(config);
+      const workouts = await resolveWorkouts(oura, params);
+      if (!workouts.length) {
+        return makeError("No Oura workouts found for that id or date range. Check the window with oura_list_workouts first.");
+      }
+
+      const { hrmax, source, age } = await resolveHrmax(oura, params.hrmax);
+      const rollups: WorkoutZoneRollup[] = [];
+      for (const workout of workouts) {
+        rollups.push(await rollupWorkoutZones(oura, workout, hrmax, source, age));
+      }
+
+      const output = {
+        kind: "workout_zones" as const,
+        generated_at: new Date().toISOString(),
+        workouts_analyzed: rollups.length,
+        rollups,
+        safety: { medical_advice: false }
+      };
+      return makeResponse(output, params.response_format, formatZoneMarkdown(rollups));
+    } catch (error) {
+      return makeError((error as Error).message);
+    }
+  });
 
   server.registerTool("oura_daily_summary", {
     title: "Oura Daily Recovery Summary",

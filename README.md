@@ -27,6 +27,41 @@
 > `/data` so the token store and optional cache land on a mounted volume, the listener
 > binds `0.0.0.0`, and `SIGTERM`/`SIGINT` shut the server down cleanly.
 >
+> **4. Correctness fixes found against live data.**
+>
+> - **`end_date` is not consistent across Oura endpoints.** `daily_activity`, `sleep`,
+>   `workout` and `session` treat it as EXCLUSIVE (`start_date == end_date` returns zero
+>   records); `daily_readiness`, `daily_sleep` and `daily_spo2` treat it as inclusive.
+>   The per-day aggregator asked them all the same way, so activity and sleep were empty
+>   every day — a weekly scorecard reported `total_steps: 0` and `days_with_hrv: 0`
+>   against a full week of data, at confidence "high". Requests to the exclusive
+>   endpoints now send `end_date + 1 day` and filter on `day`.
+> - **Naps shadowed the main sleep.** Oura returns every sleep period for a day and a
+>   30-second `type: "sleep"` blip sorts ahead of the real `long_sleep`; taking `data[0]`
+>   reported a half-minute night with no HRV. The longest `long_sleep` now wins.
+> - **`sort: "asc" | "desc"` replaces the oldest-end `limit`.** `limit: 1` used to return
+>   the OLDEST record in the window and needed a 200-word schema description to warn
+>   about it. `limit` now just means "how many" and `sort` says from which end, defaulting
+>   to newest-first.
+> - **The markdown formatter read Strava/Fitbit field names** (`start_date`, `sport_type`,
+>   `moving_time`), so Oura workouts rendered as "start: n/a, sport: n/a" while `distance`
+>   survived by coincidence. It now reads Oura's fields, and record headings are
+>   `date · activity` rather than a bare UUID.
+> - **`privacy_mode: "structured"`** keeps the analytic fields (start/end, duration,
+>   activity, intensity, calories, distance, steps) and redacts identity and location
+>   instead: email, account id, and any GPS/route/polyline key.
+> - **Threshold claims carry their evidence.** Every diagnostic asserting a comparison
+>   ("sleep below 6.5h") now also appears in `diagnostic.findings` with the observed
+>   value, metric, threshold and comparator, and states the number in the message.
+>
+> **5. `oura_workout_zones`** — minutes per heart-rate zone for a workout, from the
+> heart-rate samples inside its window. Samples are weighted by elapsed time rather than
+> counted, because Oura samples every ~5s during exercise and every ~5min at rest, and
+> gaps beyond 5 minutes are not credited to any zone. Reports `data_completeness_pct`,
+> since optical HR dropout otherwise makes an incomplete rollup indistinguishable from a
+> complete one. Takes `hrmax`, falling back to 220-age with the error stated.
+> **`oura_get_workout`** fetches one workout by id.
+>
 > Added env vars: `SERVER_URL` (OAuth issuer; must equal the public URL),
 > `OAUTH_CLIENT_SECRET`, `TOKENS_PATH`, `OURA_PERSONAL_ACCESS_TOKEN`, `OURA_MCP_NO_AUTH`.
 >

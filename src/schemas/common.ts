@@ -45,11 +45,13 @@ export function collectionInputSchema(latestResourceUri?: string) {
     next_token: z.string().min(1).max(4096).optional()
       .describe("Opaque Oura v2 cursor from a previous collection response. Pass it back unchanged with the same after/before window to resume. Oura has no integer page index and no page-size parameter; do not invent or increment a page number."),
     limit: z.number().int().min(1).max(MAX_OURA_LIMIT).default(DEFAULT_LIMIT)
-      .describe(`Maximum number of records returned by this call, kept from the OLDEST end of the window. Oura v2 serves collections oldest-first, has no sort parameter and no page-size parameter, so limit=1 returns the OLDEST record in the window, never the newest. ${recencyRoute(latestResourceUri)} The cap is applied locally after fetching and also stops cursor pagination once it is reached; when it dropped records, truncated is true and has_more is true. If truncated is true, raise limit or set all_pages — do not follow a cursor, because next_token is omitted whenever resuming would skip dropped records.`),
+      .describe("Maximum number of records to return, taken from the end named by sort."),
+    sort: z.enum(["asc", "desc"]).default("desc")
+      .describe(`Order of the returned records: desc is newest-first (the default), asc is oldest-first. Oura serves oldest-first behind a cursor, so desc walks the whole window before returning and asc is cheaper on wide windows. ${recencyRoute(latestResourceUri)}`),
     all_pages: z.boolean().default(false)
       .describe("When true, follow the Oura next_token cursor up to max_pages in this one call. Resume later by passing the returned next_token with the same after/before window."),
-    max_pages: z.number().int().min(1).max(MAX_PAGES).default(DEFAULT_MAX_PAGES)
-      .describe("Maximum upstream Oura pages to fetch in this call when all_pages is true. A runaway guard, not an Oura page index."),
+    max_pages: z.number().int().min(1).max(MAX_PAGES).optional()
+      .describe(`Maximum upstream Oura pages to fetch in this call. A runaway guard, not an Oura page index. Left unset it defaults to ${DEFAULT_MAX_PAGES} for ascending reads and ${MAX_PAGES} for descending ones, which must reach the end of the window to know which records are newest.`),
     privacy_mode: PrivacyModeSchema,
     explicit_user_intent: ExplicitPrivacyIntentSchema,
     response_format: ResponseFormatSchema
@@ -145,11 +147,13 @@ export const CollectionOutputSchema = z.object({
   privacy_mode: PrivacyModeValueSchema,
   count: z.number().int().nonnegative(),
   records: z.array(z.unknown()),
+  sort: z.enum(["asc", "desc"]).describe("Which end of the window these records came from."),
   next_token: z.string().min(1).optional()
-    .describe("Opaque Oura v2 cursor to resume from. Pass this back as input next_token with the same after/before window. Present only when more records exist upstream AND this call did not locally drop fetched records (truncated is false). When truncated is true, next_token is omitted: raise limit or set all_pages instead of following a cursor, which would skip the dropped records. Never increment a page number."),
-  has_more: z.boolean().describe("True when more records exist beyond this response, either upstream (a resumable next_token) or because the limit cap dropped records (truncated). If truncated is true, raise limit or set all_pages; if next_token is present, pass it back."),
-  truncated: z.boolean().describe("True when the limit cap dropped records that had already been fetched. Raise limit or set all_pages (or narrow after/before) to see them. next_token is omitted in this case so a resume cannot skip those rows."),
-  pages_fetched: z.number().int().nonnegative()
+    .describe("Opaque Oura v2 cursor to resume from, for ascending reads only. Pass it back unchanged with the same after/before window; never increment a page number. Omitted when sort is desc (the window was already consumed) or when truncated is true (resuming would skip dropped rows) — raise limit instead."),
+  has_more: z.boolean().describe("True when more records exist beyond this response, either upstream or because the limit cap dropped some."),
+  truncated: z.boolean().describe("True when the limit cap dropped records that had already been fetched. Raise limit or narrow after/before to see them."),
+  pages_fetched: z.number().int().nonnegative(),
+  cursor_exhausted: z.boolean().describe("False when the page budget ran out before Oura's cursor did, meaning a desc read may not have reached the true newest record.")
 }).strict();
 
 export const CacheStatusOutputSchema = z.object({
@@ -321,6 +325,62 @@ export const DataInventoryOutputSchema = z.object({
   recommended_agent_flow: z.array(z.string()),
   links: z.record(z.string(), z.string()),
   notes: z.array(z.string())
+}).strict();
+
+export const WorkoutZonesInputSchema = z.object({
+  workout_id: z.string().min(1).optional()
+    .describe("Roll up a single workout by its Oura document id, as returned by oura_list_workouts."),
+  after: DateTimeSchema.describe("Start of a date range to roll up every workout in. Ignored when workout_id is given."),
+  before: DateTimeSchema.describe("End of a date range to roll up every workout in, inclusive. Ignored when workout_id is given."),
+  hrmax: z.number().int().min(100).max(230).optional()
+    .describe("Measured maximum heart rate in bpm. Strongly preferred: without it zones are derived from 220-age, which carries roughly +/-10-12 bpm of individual error."),
+  max_workouts: z.number().int().min(1).max(20).default(5)
+    .describe("Cap on how many workouts to roll up when using a date range. Each one costs at least one heart-rate request."),
+  response_format: ResponseFormatSchema
+}).strict();
+
+export const ZoneBucketSchema = z.object({
+  zone: z.string(),
+  label: z.string(),
+  min_pct_hrmax: z.number(),
+  max_pct_hrmax: z.number().nullable(),
+  min_bpm: z.number(),
+  max_bpm: z.number().nullable(),
+  minutes: z.number(),
+  sample_count: z.number().int().nonnegative()
+}).strict();
+
+export const WorkoutZonesOutputSchema = z.object({
+  kind: z.literal("workout_zones"),
+  generated_at: z.string(),
+  workouts_analyzed: z.number().int().nonnegative(),
+  rollups: z.array(z.object({
+    workout: z.object({
+      id: z.string().optional(),
+      day: z.string().optional(),
+      activity: z.string().optional(),
+      intensity: z.string().optional(),
+      start_datetime: z.string().optional(),
+      end_datetime: z.string().optional(),
+      duration_minutes: z.number().optional()
+    }).strict(),
+    hrmax: z.object({
+      bpm: z.number(),
+      source: z.enum(["provided", "estimated_220_minus_age"]),
+      age: z.number().optional()
+    }).strict(),
+    zones: z.array(ZoneBucketSchema),
+    below_zone1_minutes: z.number(),
+    total_measured_minutes: z.number(),
+    data_completeness_pct: z.number()
+      .describe("Share of the workout window covered by heart-rate samples, 0-100. Below ~80% the zone minutes are a floor, not a total."),
+    sample_count: z.number().int().nonnegative(),
+    average_bpm: z.number().optional(),
+    max_bpm: z.number().optional(),
+    cursor_exhausted: z.boolean(),
+    notes: z.array(z.string())
+  }).strict()),
+  safety: z.object({ medical_advice: z.boolean() }).strict()
 }).strict();
 
 export const SummaryOutputSchema = z.object({

@@ -66,9 +66,11 @@ export async function buildDemoPayload() {
   const wellness_context = await buildWellnessContext(client, options);
   const readiness_list = buildCollectionOutput("/usercollection/daily_readiness", "structured", {
     records: readinessRecords(),
+    sort: "desc",
     pages_fetched: 1,
     has_more: false,
-    truncated: false
+    truncated: false,
+    cursor_exhausted: true
   });
 
   return {

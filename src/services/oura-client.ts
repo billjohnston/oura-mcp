@@ -1,5 +1,5 @@
 import { URL, URLSearchParams } from "node:url";
-import { DEFAULT_LIMIT, LATEST_SCAN_MAX_PAGES, OURA_API_BASE_URL, OURA_AUTH_URL, OURA_REVOKE_URL, OURA_TOKEN_URL, MAX_OURA_LIMIT } from "../constants.js";
+import { DEFAULT_LIMIT, DEFAULT_MAX_PAGES, EXCLUSIVE_END_DATE_ENDPOINTS, HR_SCAN_MAX_PAGES, LATEST_SCAN_MAX_PAGES, MAX_PAGES, OURA_API_BASE_URL, OURA_AUTH_URL, OURA_REVOKE_URL, OURA_TOKEN_URL, MAX_OURA_LIMIT } from "../constants.js";
 import type { OuraConfig, OuraTokenSet } from "../types.js";
 import { disabledCacheStatus, OuraCache, type CacheStatus } from "./cache.js";
 import { fetchWithCache, getCacheStats } from "./http-cache.js";
@@ -8,23 +8,45 @@ import { mostRecentRecord } from "./recency.js";
 import { redactErrorMessage } from "./redaction.js";
 import { TokenStore } from "./token-store.js";
 
+export type SortOrder = "asc" | "desc";
+
 export interface ListParams {
   after?: string;
   before?: string;
   /** Opaque Oura v2 cursor from a previous list response. Not a page number. */
   next_token?: string;
   limit?: number;
+  /** Which end of the window `limit` keeps. Defaults to newest-first. */
+  sort?: SortOrder;
   all_pages?: boolean;
   max_pages?: number;
 }
 
 export interface ListResult {
   records: unknown[];
+  /** Which end of the window these records came from. */
+  sort: SortOrder;
   /** Present only when it is safe to resume without skipping records. */
   next_token?: string;
   pages_fetched: number;
   has_more: boolean;
   truncated: boolean;
+  /** False when the page budget ran out before Oura's cursor did. */
+  cursor_exhausted: boolean;
+}
+
+export interface HeartRateSample {
+  /** Epoch milliseconds. */
+  at: number;
+  bpm: number;
+  /** Oura's own labelling, e.g. "workout", "awake", "rest". */
+  source?: string;
+}
+
+export interface HeartRateScan {
+  samples: HeartRateSample[];
+  pages_fetched: number;
+  cursor_exhausted: boolean;
 }
 
 export interface LatestParams {
@@ -108,54 +130,99 @@ export class OuraClient {
   /**
    * Read an Oura collection endpoint.
    *
-   * `limit` is a cap on how many records this call returns, applied locally: the Oura v2
-   * API exposes no page-size parameter, only `start_date`, `end_date` and the opaque
-   * `next_token` cursor. Pagination therefore ends when the upstream cursor is exhausted
-   * or when `max_pages` / the cap is reached — never by comparing a page's length to
-   * `limit`, which is a number the API has never seen.
+   * `limit` caps how many records come back and `sort` picks which end they come from.
+   * Oura v2 has no sort or page-size parameter and always serves oldest-first behind an
+   * opaque cursor, so `sort: "desc"` is satisfied here: the window is walked to its end
+   * (bounded by `max_pages`) and the newest `limit` records are returned. `sort: "asc"`
+   * can stop as soon as the cap is met, so it is the cheaper option on wide windows.
    *
-   * The cap keeps records from the OLDEST end, because that is the end Oura serves first
-   * and the only end reachable without walking the whole window. Callers that want the
-   * newest record want `latest()`, not `limit: 1`.
+   * Resume with `params.next_token`. Integer `page` / `next_page` are not Oura v2
+   * parameters: a leftover `page` other than 1 is rejected so agents cannot loop or skip
+   * by incrementing a number the API has never seen.
    *
-   * Resume with `params.next_token` from a previous response. Integer `page` / `next_page`
-   * are not Oura v2 parameters: a leftover `page` other than 1 is rejected so agents cannot
-   * loop or skip by incrementing a number the API has never seen.
-   *
-   * `next_token` is returned only when it is safe to resume without skipping records —
-   * i.e. when this call did not locally drop fetched rows (`truncated` is false). When
-   * `truncated` is true, raise `limit` or use `all_pages`; following the upstream cursor
-   * would skip the dropped rows.
+   * `next_token` is returned only when resuming would not skip records — that is, for
+   * ascending reads that did not drop rows locally. A descending read already consumed
+   * the window, so its cursor points at older records the caller ranked past.
    */
   async list(path: string, params: ListParams = {}): Promise<ListResult> {
     rejectDecorativePage(params);
     const limit = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), MAX_OURA_LIMIT);
-    const maxPages = params.all_pages ? Math.max(1, params.max_pages ?? 1) : 1;
+    const sort = params.sort ?? "desc";
+    // Descending has to reach the newest record, which sits on the LAST page, so it
+    // always walks the cursor. Ascending may stop as soon as the cap is met.
+    const walkAll = sort === "desc" || Boolean(params.all_pages);
+    const maxPages = walkAll ? Math.max(1, params.max_pages ?? (sort === "desc" ? MAX_PAGES : DEFAULT_MAX_PAGES)) : 1;
     const collected: unknown[] = [];
     let nextToken: string | undefined = params.next_token;
     let pages = 0;
 
     while (pages < maxPages) {
       const payload = await this.get(path, {
-        ...ouraDateRange(params),
+        ...ouraDateRange(params, path),
         next_token: nextToken
       });
       collected.push(...extractRecords(payload));
       pages += 1;
       nextToken = extractNextToken(payload);
-      // Stop on cursor exhaustion, on a satisfied cap, or on a single-page request.
-      if (!nextToken || collected.length >= limit || !params.all_pages) break;
+      if (!nextToken) break;
+      if (sort === "asc" && collected.length >= limit) break;
+      if (!walkAll) break;
     }
 
-    const records = collected.slice(0, limit);
+    // Oura serves oldest-first; reverse before capping so "newest N" keeps the newest.
+    const ordered = sort === "desc" ? [...collected].reverse() : collected;
+    const records = ordered.slice(0, limit);
     const truncated = collected.length > limit;
     return {
       records,
-      next_token: truncated ? undefined : nextToken,
+      sort,
+      next_token: sort === "desc" || truncated ? undefined : nextToken,
       pages_fetched: pages,
       has_more: Boolean(nextToken) || truncated,
-      truncated
+      truncated,
+      cursor_exhausted: !nextToken
     };
+  }
+
+  /** Fetch a single document by id, e.g. `/usercollection/workout/{id}`. */
+  async getById(collectionPath: string, documentId: string): Promise<unknown> {
+    return this.get(`${collectionPath}/${encodeURIComponent(documentId)}`);
+  }
+
+  /**
+   * Walk every heart-rate sample in an instant range.
+   *
+   * `/usercollection/heartrate` takes `start_datetime` / `end_datetime` — not the
+   * `start_date` / `end_date` the collection endpoints use — and caps a page at 1000
+   * samples, which one workout can exceed: during exercise Oura samples roughly every
+   * 5 seconds rather than every 5 minutes.
+   */
+  async heartrateSamples(startIso: string, endIso: string, maxPages = HR_SCAN_MAX_PAGES): Promise<HeartRateScan> {
+    const samples: HeartRateSample[] = [];
+    let nextToken: string | undefined;
+    let pages = 0;
+
+    while (pages < maxPages) {
+      const payload = await this.get("/usercollection/heartrate", {
+        start_datetime: startIso,
+        end_datetime: endIso,
+        next_token: nextToken
+      });
+      for (const record of extractRecords(payload)) {
+        if (!record || typeof record !== "object") continue;
+        const { timestamp, bpm, source } = record as Record<string, unknown>;
+        if (typeof timestamp !== "string" || typeof bpm !== "number") continue;
+        const at = Date.parse(timestamp);
+        if (!Number.isFinite(at)) continue;
+        samples.push({ at, bpm, source: typeof source === "string" ? source : undefined });
+      }
+      pages += 1;
+      nextToken = extractNextToken(payload);
+      if (!nextToken) break;
+    }
+
+    samples.sort((a, b) => a.at - b.at);
+    return { samples, pages_fetched: pages, cursor_exhausted: !nextToken };
   }
 
   /**
@@ -181,7 +248,7 @@ export class OuraClient {
     let scanned = 0;
 
     while (pages < maxPages) {
-      const payload = await this.get(path, { ...ouraDateRange(params), next_token: nextToken });
+      const payload = await this.get(path, { ...ouraDateRange(params, path), next_token: nextToken });
       const pageRecords = extractRecords(payload);
       scanned += pageRecords.length;
       if (pageRecords.length > 0) best = mostRecentRecord(best === undefined ? pageRecords : [best, ...pageRecords]);
@@ -375,11 +442,29 @@ export class OuraClient {
   }
 }
 
-function ouraDateRange(params: { after?: string; before?: string }): Record<string, string> {
+/**
+ * Build Oura's `start_date` / `end_date` for a caller window that is inclusive at both
+ * ends, compensating for the endpoints where Oura's `end_date` is exclusive.
+ */
+export function ouraDateRange(params: { after?: string; before?: string }, path = ""): Record<string, string> {
   const range: Record<string, string> = {};
   if (params.after) range.start_date = toDate(params.after);
-  if (params.before) range.end_date = toDate(params.before);
+  if (params.before) {
+    const end = toDate(params.before);
+    range.end_date = isExclusiveEndDate(path) ? addDays(end, 1) : end;
+  }
   return range;
+}
+
+function isExclusiveEndDate(path: string): boolean {
+  const clean = path.startsWith("/") ? path : `/${path}`;
+  return EXCLUSIVE_END_DATE_ENDPOINTS.some((endpoint) => clean.startsWith(endpoint));
+}
+
+export function addDays(date: string, days: number): string {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
 }
 
 function toDate(value: string): string {

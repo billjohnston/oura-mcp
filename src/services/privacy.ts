@@ -41,7 +41,8 @@ export function applyPrivacy(endpoint: string, payload: unknown, mode: PrivacyMo
 export function normalizeRecord(endpoint: string, record: unknown, mode: PrivacyMode): unknown {
   if (!isObject(record)) return record;
   if (endpoint.includes("personal_info")) return normalizePersonalInfo(record, mode);
-  if (endpoint.includes("daily_activity") || endpoint.includes("workout")) return normalizeOuraActivity(record, mode);
+  if (endpoint.includes("workout")) return normalizeOuraWorkout(record, mode);
+  if (endpoint.includes("daily_activity")) return normalizeOuraActivity(record, mode);
   if (endpoint.includes("daily_readiness")) return normalizeOuraReadiness(record, mode);
   if (endpoint.includes("sleep")) return normalizeOuraSleep(record, mode);
   if (endpoint.includes("heartrate") || endpoint.includes("spo2")) return normalizeVitals(record, mode);
@@ -74,6 +75,13 @@ function normalizeProfile(record: Record<string, unknown>, mode: PrivacyMode): u
   return removeSensitive({ ...user, email: undefined, avatar: undefined, avatar150: undefined });
 }
 
+/**
+ * Personal info minus the direct identifiers.
+ *
+ * `email` and `id` name the account; age, height, weight and biological sex describe a
+ * body and are inputs the analytic tools genuinely need — `age` is the 220-age HRmax
+ * fallback behind the zone rollup. Everything is available under privacy_mode=raw.
+ */
 function normalizePersonalInfo(record: Record<string, unknown>, mode: PrivacyMode): unknown {
   const base = pickDefined({
     age: record.age,
@@ -82,7 +90,35 @@ function normalizePersonalInfo(record: Record<string, unknown>, mode: PrivacyMod
     biological_sex: record.biological_sex
   });
   if (mode === "summary") return base;
-  return removeSensitive({ ...record, email: undefined });
+  const clean = removeSensitive(record);
+  delete clean.id;
+  return clean;
+}
+
+/**
+ * A workout, keeping what makes it analysable.
+ *
+ * The point of a workout record is when it happened, how long it lasted, what it was and
+ * how hard it was. Those are not identifying, so `structured` keeps them; identity and
+ * location are what gets dropped. `duration_seconds` is derived because Oura only gives
+ * the two endpoints.
+ */
+function normalizeOuraWorkout(record: Record<string, unknown>, mode: PrivacyMode): unknown {
+  const base = pickDefined({
+    id: record.id,
+    day: record.day,
+    activity: record.activity,
+    label: record.label,
+    intensity: record.intensity,
+    source: record.source,
+    start_datetime: record.start_datetime,
+    end_datetime: record.end_datetime,
+    duration_seconds: durationSeconds(record.start_datetime, record.end_datetime),
+    calories: record.calories,
+    distance: record.distance
+  });
+  if (mode === "summary") return base;
+  return removeSensitive({ ...record, ...base });
 }
 
 function normalizeOuraActivity(record: Record<string, unknown>, mode: PrivacyMode): unknown {
@@ -212,8 +248,38 @@ function summarizeUnknown(record: Record<string, unknown>): Record<string, unkno
   });
 }
 
+/**
+ * Fields that name a person or a credential. Removed in every mode except raw.
+ */
+const IDENTITY_KEYS = [
+  "email", "fullName", "firstName", "lastName", "displayName", "username",
+  "user_id", "userId", "avatar", "avatar150", "access_token", "refresh_token"
+];
+
+/**
+ * Fields that place a person somewhere. Removed in every mode except raw.
+ *
+ * A route is far more identifying than any biometric in this dataset: it names where you
+ * live, work and exercise. Oura does not currently return these, but workout records are
+ * the obvious place for them to appear, and a redaction list that only covers today's
+ * schema stops working the moment the schema grows.
+ */
+const LOCATION_KEYS = [
+  "start_latlng", "end_latlng", "latlng", "lat", "lng", "latitude", "longitude",
+  "map", "polyline", "summary_polyline", "route", "gps", "tcxLink", "gpx", "location"
+];
+
 function removeSensitive(record: Record<string, unknown>): Record<string, unknown> {
   const clone = { ...record };
-  for (const key of ["email", "fullName", "firstName", "lastName", "avatar", "avatar150", "features", "access_token", "refresh_token", "start_latlng", "end_latlng", "latlng", "map", "polyline", "summary_polyline", "gps", "tcxLink"] ) delete clone[key];
+  for (const key of [...IDENTITY_KEYS, ...LOCATION_KEYS, "features"]) delete clone[key];
   return clone;
+}
+
+/** Seconds between two ISO instants, or undefined if either is unusable. */
+function durationSeconds(start: unknown, end: unknown): number | undefined {
+  if (typeof start !== "string" || typeof end !== "string") return undefined;
+  const from = Date.parse(start);
+  const to = Date.parse(end);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return undefined;
+  return Math.round((to - from) / 1000);
 }

@@ -8,12 +8,36 @@ import { formatCollection } from '../dist/services/format.js';
 const dir = mkdtempSync(join(tmpdir(), 'oura-mcp-agent-readiness-'));
 
 try {
-  const markdown = formatCollection('Oura Activities', [
-    { id: 1, name: 'Morning Tennis', sport_type: 'Tennis', start_date: '2026-04-27T12:30:43Z', distance: 41.3 },
-    { id: 2, name: 'Afternoon Tennis', sport_type: 'Tennis', start_date: '2026-04-26T20:05:51Z', distance: 4557 }
+  // Real Oura workout field names. The previous fixture used Strava/Fitbit ones
+  // (sport_type, start_date, name) and so did the formatter, which is why a genuine
+  // Oura workout rendered as "start: n/a, sport: n/a" while distance survived by
+  // coincidence — the one field name the two schemas happen to share.
+  const markdown = formatCollection('Oura Workouts', [
+    {
+      id: 'ba6f31ba-c96c-4219-bec5-e45bfff64e44',
+      day: '2026-08-12',
+      activity: 'walking',
+      intensity: 'moderate',
+      start_datetime: '2026-08-12T08:26:00.000-04:00',
+      end_datetime: '2026-08-12T09:10:00.000-04:00',
+      duration_seconds: 2640,
+      calories: 172.13,
+      distance: 3658.91
+    },
+    {
+      id: '0f6d9d20-3e5b-4e0e-9a1f-2b0c3d4e5f60',
+      day: '2026-08-12',
+      activity: 'HIIT',
+      intensity: 'moderate',
+      start_datetime: '2026-08-12T17:23:00.000-04:00',
+      end_datetime: '2026-08-12T17:34:00.000-04:00',
+      duration_seconds: 660,
+      calories: 39.23,
+      distance: 8.97
+    }
   ], {
-    endpoint: '/1/user/-/activities/list.json',
-    privacy_mode: 'summary',
+    endpoint: '/usercollection/workout',
+    privacy_mode: 'structured',
     count: 2,
     records: [{ id: 1 }, { id: 2 }],
     pages_fetched: 1
@@ -21,7 +45,21 @@ try {
 
   assert.doesNotMatch(markdown, /\[object Object\]/, 'Markdown previews must never leak JavaScript object stringification.');
   assert.doesNotMatch(markdown, /\*\*records\*\*/i, 'Collection markdown should not duplicate full record arrays in metadata.');
-  assert.match(markdown, /Morning Tennis/);
+  assert.doesNotMatch(markdown, /n\/a/, 'Oura records must not render as n/a; that means the formatter is reading another API\'s field names.');
+
+  for (const expected of [/walking/, /HIIT/, /moderate/, /2026-08-12T08:26/, /44 min/, /172\.13/]) {
+    assert.match(markdown, expected, `markdown must surface ${expected}`);
+  }
+
+  // A bare UUID must never be a heading: it is noise to a reader and bait for a model to
+  // invent one. It stays as a labelled field, because oura_get_workout can act on it.
+  assert.doesNotMatch(
+    markdown,
+    /^##\s*[0-9a-f]{8}-[0-9a-f]{4}-/m,
+    'record headings must be human-readable, not raw UUIDs'
+  );
+  assert.match(markdown, /^## 2026-08-12 · walking$/m, 'headings should read as date · activity');
+  assert.match(markdown, /\*\*id\*\*: `ba6f31ba-/, 'the id stays available as a field for oura_get_workout');
 
   const tokenPath = join(dir, 'tokens.json');
   writeFileSync(tokenPath, JSON.stringify({

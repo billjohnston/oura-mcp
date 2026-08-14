@@ -1,4 +1,5 @@
 import type { OuraClient } from "./oura-client.js";
+import { addDays } from "./oura-client.js";
 import { redactErrorMessage } from "./redaction.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -69,22 +70,55 @@ async function safeGet(client: Pick<OuraClient, "get">, endpoint: string, params
 }
 
 async function dailyBundle(client: Pick<OuraClient, "get">, date: string) {
-  const range = { start_date: date, end_date: date };
+  // `daily_activity` and `sleep` treat end_date as EXCLUSIVE, so start_date == end_date
+  // returns nothing for them while the daily_* score endpoints return the day. Asking
+  // for one day the same way on every endpoint is what silently zeroed steps and HRV.
+  const dayRange = { start_date: date, end_date: date };
+  const spanRange = { start_date: date, end_date: addDays(date, 1) };
   const [activity, dailySleep, readiness, sleep, spo2] = await Promise.all([
-    safeGet(client, "/usercollection/daily_activity", range),
-    safeGet(client, "/usercollection/daily_sleep", range),
-    safeGet(client, "/usercollection/daily_readiness", range),
-    safeGet(client, "/usercollection/sleep", range),
-    safeGet(client, "/usercollection/daily_spo2", range)
+    safeGet(client, "/usercollection/daily_activity", spanRange),
+    safeGet(client, "/usercollection/daily_sleep", dayRange),
+    safeGet(client, "/usercollection/daily_readiness", dayRange),
+    safeGet(client, "/usercollection/sleep", spanRange),
+    safeGet(client, "/usercollection/daily_spo2", dayRange)
   ]);
   return { date, activity, dailySleep, readiness, sleep, spo2 };
 }
 
+/** Records from a widened window can include the following day; keep the one asked for. */
+function recordsForDay(payload: unknown, date: string): UnknownRecord[] {
+  const rows = Array.isArray(payload)
+    ? payload
+    : isObject(payload) && Array.isArray(payload.data)
+      ? payload.data
+      : [];
+  const matching = rows.filter((row): row is UnknownRecord => isObject(row) && row.day === date);
+  // Fall back to the raw rows when the payload carries no `day` at all, so this stays
+  // compatible with fixtures and with any endpoint that omits it.
+  return matching.length ? matching : rows.filter((row): row is UnknownRecord => isObject(row));
+}
+
+/**
+ * The night's main sleep, not merely the first record.
+ *
+ * Oura returns every sleep period for a day, and a 30-second `type: "sleep"` blip sorts
+ * ahead of the real `long_sleep` — taking `data[0]` then reports a half-minute night with
+ * no HRV. Prefer a long_sleep period, then the longest, which is what "last night" means.
+ */
+function mainSleep(payload: unknown, date: string): UnknownRecord {
+  const rows = recordsForDay(payload, date);
+  if (!rows.length) return {};
+  const duration = (row: UnknownRecord) => num(row, ["total_sleep_duration", "time_in_bed"]) ?? 0;
+  const longSleeps = rows.filter((row) => row.type === "long_sleep");
+  const candidates = longSleeps.length ? longSleeps : rows;
+  return candidates.reduce((best, row) => (duration(row) > duration(best) ? row : best), candidates[0]);
+}
+
 function dailyStats(bundle: Awaited<ReturnType<typeof dailyBundle>>) {
-  const activity = firstData(bundle.activity);
+  const activity = recordsForDay(bundle.activity, bundle.date)[0] ?? {};
   const dailySleep = firstData(bundle.dailySleep);
   const readiness = firstData(bundle.readiness);
-  const sleep = firstData(bundle.sleep);
+  const sleep = mainSleep(bundle.sleep, bundle.date);
   const spo2 = firstData(bundle.spo2);
   const totalSleepSeconds = num(sleep, ["total_sleep_duration", "time_in_bed"]);
   const activeCalories = num(activity, ["active_calories", "calories"]);
@@ -125,18 +159,100 @@ function classifyReadiness(stats: ReturnType<typeof dailyStats>): string {
   return "neutral";
 }
 
-function buildActions(stats: ReturnType<typeof dailyStats>, weekly?: ReturnType<typeof aggregateStats>): string[] {
-  const actions: string[] = [];
+/**
+ * A threshold claim plus the number that triggered it.
+ *
+ * Every string that asserts a comparison ("sleep below 6.5h") also carries the observed
+ * value, the threshold and the metric name, so a reader can check the claim instead of
+ * taking it on faith — and so a downstream agent can re-evaluate it without re-parsing
+ * English.
+ */
+export interface Finding {
+  code: string;
+  message: string;
+  metric?: string;
+  value?: number;
+  threshold?: number;
+  comparator?: "lt" | "gt" | "lte" | "gte";
+  unit?: string;
+}
+
+function threshold(
+  code: string,
+  metric: string,
+  value: number | undefined,
+  comparator: "lt" | "gt",
+  limit: number,
+  unit: string,
+  message: (value: number) => string
+): Finding | undefined {
+  if (value === undefined) return undefined;
+  const breached = comparator === "lt" ? value < limit : value > limit;
+  if (!breached) return undefined;
+  return { code, message: message(value), metric, value, threshold: limit, comparator, unit };
+}
+
+function buildFindings(stats: ReturnType<typeof dailyStats>, weekly?: ReturnType<typeof aggregateStats>): Finding[] {
+  const findings: Finding[] = [];
   const state = classifyReadiness(stats);
-  if (state === "low_readiness") actions.push("Keep intensity low today and prioritize recovery inputs before adding more training stress.");
-  if (state === "sleep_limited") actions.push("Treat sleep as the main constraint: protect bedtime, light exposure and stimulant cutoff before optimizing workouts.");
-  if (state === "load_recovery_mismatch") actions.push("Activity load looks high relative to recovery; use subjective soreness and schedule pressure before deciding on intensity.");
-  if (state === "high_readiness") actions.push("If subjective energy agrees, this is a reasonable day for quality work or progressive aerobic volume.");
-  if (state === "neutral") actions.push("Use Oura as a baseline check today: pair the scores with subjective energy, soreness and schedule pressure.");
-  if ((stats.temperature_deviation ?? 0) > 0.5) actions.push("Watch temperature deviation as context only; illness symptoms should override training plans.");
-  if (weekly?.avg_sleep_hours !== undefined && weekly.avg_sleep_hours < 6.5) actions.push("Weekly sleep average is below 6.5h; recovery improvements may beat training complexity.");
-  actions.push("This is not medical advice; use Oura as trend context and escalate symptoms or abnormal vitals to a clinician.");
-  return [...new Set(actions)];
+  const sleepHours = stats.sleep_minutes === undefined ? undefined : round(stats.sleep_minutes / 60, 2);
+
+  if (state === "low_readiness") {
+    findings.push({
+      code: "low_readiness",
+      message: `Readiness is ${stats.readiness_score} (below 60). Keep intensity low today and prioritize recovery inputs before adding more training stress.`,
+      metric: "readiness_score", value: stats.readiness_score, threshold: 60, comparator: "lt", unit: "score"
+    });
+  }
+  if (state === "sleep_limited") {
+    findings.push({
+      code: "sleep_limited",
+      message: `Sleep is the limiting input today (${sleepHours ?? "?"}h slept, sleep score ${stats.sleep_score ?? "n/a"}). Protect bedtime, light exposure and stimulant cutoff before optimizing workouts.`,
+      metric: "sleep_hours", value: sleepHours, threshold: 6, comparator: "lt", unit: "hours"
+    });
+  }
+  if (state === "load_recovery_mismatch") {
+    findings.push({
+      code: "load_recovery_mismatch",
+      message: `Activity score ${stats.activity_score} is high against readiness ${stats.readiness_score}; use subjective soreness and schedule pressure before deciding on intensity.`,
+      metric: "activity_score", value: stats.activity_score, threshold: 85, comparator: "gt", unit: "score"
+    });
+  }
+  if (state === "high_readiness") {
+    findings.push({
+      code: "high_readiness",
+      message: `Readiness is ${stats.readiness_score} (at or above 85). If subjective energy agrees, this is a reasonable day for quality work or progressive aerobic volume.`,
+      metric: "readiness_score", value: stats.readiness_score, threshold: 85, comparator: "gt", unit: "score"
+    });
+  }
+  if (state === "neutral") {
+    findings.push({
+      code: "neutral",
+      message: "Use Oura as a baseline check today: pair the scores with subjective energy, soreness and schedule pressure."
+    });
+  }
+
+  const temperature = threshold(
+    "temperature_deviation", "temperature_deviation", stats.temperature_deviation, "gt", 0.5, "celsius",
+    (value) => `Temperature deviation is +${value}°C (above 0.5). Treat as context only; illness symptoms should override training plans.`
+  );
+  if (temperature) findings.push(temperature);
+
+  const weeklySleep = threshold(
+    "weekly_sleep_low", "avg_sleep_hours", weekly?.avg_sleep_hours, "lt", 6.5, "hours",
+    (value) => `Weekly sleep average is ${value}h (below 6.5h); recovery improvements may beat training complexity.`
+  );
+  if (weeklySleep) findings.push(weeklySleep);
+
+  findings.push({
+    code: "not_medical_advice",
+    message: "This is not medical advice; use Oura as trend context and escalate symptoms or abnormal vitals to a clinician."
+  });
+  return findings;
+}
+
+function buildActions(stats: ReturnType<typeof dailyStats>, weekly?: ReturnType<typeof aggregateStats>): string[] {
+  return [...new Set(buildFindings(stats, weekly).map((finding) => finding.message))];
 }
 
 function aggregateStats(days: ReturnType<typeof dailyStats>[]) {
@@ -183,7 +299,8 @@ export async function buildDailySummary(client: Pick<OuraClient, "get">, options
       primary_signal: readiness === "low_readiness" || readiness === "sleep_limited"
         ? "Recovery is the limiting context today; keep recommendations conservative."
         : "Use Oura readiness, sleep and activity together as context, not diagnosis.",
-      action_candidates: buildActions(stats)
+      action_candidates: buildActions(stats),
+      findings: buildFindings(stats)
     },
     safety: {
       medical_advice: false,
@@ -228,6 +345,10 @@ export async function buildWeeklySummary(client: Pick<OuraClient, "get">, option
       load_classification: classifyWeeklyLoad(currentStats),
       bottlenecks: inferBottlenecks(currentStats, previousStats),
       action_candidates: buildActions(current[current.length - 1] ?? current[0], currentStats),
+      findings: [
+        ...inferBottleneckFindings(currentStats, previousStats),
+        ...buildFindings(current[current.length - 1] ?? current[0], currentStats)
+      ],
       next_week_success_metrics: [
         "Keep sleep average above the user's sustainable baseline before increasing intensity.",
         "Track readiness score, sleep score and HRV together rather than optimizing one metric.",
@@ -253,17 +374,52 @@ function classifyWeeklyLoad(stats: ReturnType<typeof aggregateStats>): string {
   return "neutral";
 }
 
+function inferBottleneckFindings(current: ReturnType<typeof aggregateStats>, previous?: ReturnType<typeof aggregateStats>): Finding[] {
+  const findings: Finding[] = [];
+  const sleepDelta = round(percentDelta(current.avg_sleep_hours, previous?.avg_sleep_hours), 1);
+  const readinessDelta = round(percentDelta(current.avg_readiness_score, previous?.avg_readiness_score), 1);
+
+  const readiness = threshold(
+    "avg_readiness_low", "avg_readiness_score", current.avg_readiness_score, "lt", 65, "score",
+    (value) => `Average readiness is ${value} (below 65); keep intensity recommendations conservative.`
+  );
+  if (readiness) findings.push(readiness);
+
+  const sleep = threshold(
+    "avg_sleep_low", "avg_sleep_hours", current.avg_sleep_hours, "lt", 6.5, "hours",
+    (value) => `Average sleep is ${value}h (below 6.5h); recovery may be the limiting factor.`
+  );
+  if (sleep) findings.push(sleep);
+
+  const readinessDrop = threshold(
+    "readiness_declined", "readiness_delta_pct", readinessDelta, "lt", -10, "percent",
+    (value) => `Readiness fell ${value}% versus the comparison window (beyond -10%).`
+  );
+  if (readinessDrop) findings.push(readinessDrop);
+
+  const sleepDrop = threshold(
+    "sleep_declined", "sleep_hours_delta_pct", sleepDelta, "lt", -10, "percent",
+    (value) => `Sleep duration fell ${value}% versus the comparison window (beyond -10%).`
+  );
+  if (sleepDrop) findings.push(sleepDrop);
+
+  const hrv = threshold(
+    "hrv_sparse", "days_with_hrv", current.days_with_hrv, "lt", 3, "days",
+    (value) => `HRV is present on only ${value} of ${current.days} days (below 3); do not over-weight HRV conclusions.`
+  );
+  if (hrv) findings.push(hrv);
+
+  if (!findings.length) {
+    findings.push({
+      code: "no_bottleneck",
+      message: "No obvious Oura-only bottleneck; combine trends with subjective energy, soreness and life stress."
+    });
+  }
+  return findings;
+}
+
 function inferBottlenecks(current: ReturnType<typeof aggregateStats>, previous?: ReturnType<typeof aggregateStats>): string[] {
-  const bottlenecks: string[] = [];
-  const sleepDelta = percentDelta(current.avg_sleep_hours, previous?.avg_sleep_hours);
-  const readinessDelta = percentDelta(current.avg_readiness_score, previous?.avg_readiness_score);
-  if ((current.avg_readiness_score ?? 100) < 65) bottlenecks.push("Average readiness is low; keep intensity recommendations conservative.");
-  if ((current.avg_sleep_hours ?? 0) < 6.5) bottlenecks.push("Average sleep is below 6.5h; recovery may be the limiting factor.");
-  if (readinessDelta !== undefined && readinessDelta < -10) bottlenecks.push("Readiness decreased materially versus the comparison window.");
-  if (sleepDelta !== undefined && sleepDelta < -10) bottlenecks.push("Sleep duration decreased materially versus the comparison window.");
-  if (current.days_with_hrv < 3) bottlenecks.push("HRV data is sparse; do not over-weight HRV conclusions.");
-  if (!bottlenecks.length) bottlenecks.push("No obvious Oura-only bottleneck; combine trends with subjective energy, soreness and life stress.");
-  return bottlenecks;
+  return inferBottleneckFindings(current, previous).map((finding) => finding.message);
 }
 
 export function formatSummaryMarkdown(summary: Record<string, unknown>): string {

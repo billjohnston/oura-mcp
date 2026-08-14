@@ -27,6 +27,49 @@ export const SCOPE_ALIASES: Record<string, string> = {
   spo2_daily: "spo2"
 };
 
+/**
+ * Oura collections whose `end_date` behaves EXCLUSIVELY.
+ *
+ * These endpoints filter on a timestamp rather than a plain day, so `end_date` is
+ * compared against midnight and a record on that day falls outside the window:
+ * `start_date=2026-08-12&end_date=2026-08-12` returns zero records for these, while
+ * `daily_readiness` / `daily_sleep` / `daily_spo2` return one. Verified against the
+ * live API, not inferred from the docs.
+ *
+ * Callers of this server always mean an inclusive window, so requests to these
+ * endpoints send `end_date + 1 day`.
+ */
+export const EXCLUSIVE_END_DATE_ENDPOINTS = [
+  "/usercollection/daily_activity",
+  "/usercollection/sleep",
+  "/usercollection/workout",
+  "/usercollection/session"
+];
+
+/**
+ * Heart-rate zone boundaries as a fraction of HRmax, lower bound inclusive.
+ * The classic five-zone model; anything under z1 is counted as "below_zone1".
+ */
+export const HR_ZONE_BOUNDS = [
+  { zone: "zone1", label: "very light", min: 0.5, max: 0.6 },
+  { zone: "zone2", label: "light", min: 0.6, max: 0.7 },
+  { zone: "zone3", label: "moderate", min: 0.7, max: 0.8 },
+  { zone: "zone4", label: "hard", min: 0.8, max: 0.9 },
+  { zone: "zone5", label: "maximum", min: 0.9, max: Infinity }
+];
+
+/**
+ * Longest gap between consecutive heart-rate samples that still counts as covered.
+ *
+ * Oura samples roughly every 5 minutes at rest but every ~5 seconds during a workout,
+ * so a sample's weight is the distance to the next one. Without a cap, one sample
+ * either side of a long optical dropout would paper over the whole gap.
+ */
+export const HR_SAMPLE_MAX_GAP_SECONDS = 300;
+
+/** Page budget when walking heart-rate samples, which are capped at 1000 per page. */
+export const HR_SCAN_MAX_PAGES = 20;
+
 export const DEFAULT_LIMIT = 30;
 export const MAX_OURA_LIMIT = 100;
 export const DEFAULT_MAX_PAGES = 1;
